@@ -16,7 +16,12 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { homeDir, loadConfig, readProjectOverrides } from "./config.ts";
+import {
+	homeDir,
+	loadConfig,
+	parseRetainTags,
+	readProjectOverrides,
+} from "./config.ts";
 
 /** An "add" event: a document was stored and now awaits review. */
 export interface AddEvent {
@@ -35,6 +40,8 @@ export interface AddEvent {
 	 * `memoryLanguage` silently rewrites a foreign bank in the wrong language.
 	 */
 	language?: string;
+	/** Configured tags sent with the original note, for later review edits. */
+	retainTags?: string[];
 }
 
 /**
@@ -79,6 +86,7 @@ export interface PendingDoc {
 	ts: string;
 	/** Language of the ORIGIN project's bank; "" for entries written before 0.4.1. */
 	language: string;
+	retainTags?: string[];
 }
 
 /** Fields the caller supplies for an add; ts/ev are filled in here. */
@@ -123,6 +131,9 @@ export function foldEvents(lines: Iterable<string>): PendingDoc[] {
 				reason: str(rec.reason),
 				ts: str(rec.ts),
 				language: str(rec.language),
+				retainTags: Array.isArray(rec.retainTags)
+					? parseRetainTags(rec.retainTags)
+					: undefined,
 			});
 		} else if (rec.ev === "done") {
 			pending.delete(docId);

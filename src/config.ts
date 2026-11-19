@@ -22,6 +22,8 @@ export interface HindsightConfig {
 	namespace: string;
 	/** Memory bank id (one per project by default). */
 	bankId: string;
+	/** Configured tags appended to every retain request. */
+	retain_tags: string[];
 	/**
 	 * Optional second bank holding what is true across projects (how the person
 	 * works, not what the code is). Empty = not wired: no client, no tool.
@@ -199,6 +201,7 @@ export const CONFIG_ALLOW = new Set<keyof HindsightConfig>([
 	"baseUrl",
 	"namespace",
 	"bankId",
+	"retain_tags",
 	"userBankId",
 	"modelId",
 	"recallModelId",
@@ -306,6 +309,7 @@ export function loadConfig(cwd: string): HindsightConfig {
 		).replace(/\/+$/, ""),
 		namespace: process.env.HINDSIGHT_NAMESPACE ?? "default",
 		bankId: process.env.HINDSIGHT_BANK ?? defaultBankId(cwd),
+		retain_tags: [],
 		// No cwd-derived fallback on purpose: a user bank is shared across projects,
 		// so guessing one from the folder name would be wrong by construction.
 		userBankId: process.env.HINDSIGHT_USER_BANK ?? "",
@@ -361,6 +365,7 @@ export function loadConfig(cwd: string): HindsightConfig {
 	const global = readGlobalOverrides();
 	const project = readProjectOverrides(cwd);
 	const merged = { ...base, ...global, ...project };
+	merged.retain_tags = configuredRetainTags(global, project);
 	// Chains come from user-edited JSON, so coerce them back to string arrays:
 	// a scalar or malformed value must not crash the model resolver.
 	merged.recallModelChain = asStringList(merged.recallModelChain);
@@ -386,6 +391,22 @@ function asStringList(v: unknown): string[] {
 	if (typeof v === "string") return envListFrom(v);
 	if (!Array.isArray(v)) return [];
 	return v.map((x) => (typeof x === "string" ? x.trim() : "")).filter(Boolean);
+}
+
+/** Normalize tags, treating a scalar config string as one tag. */
+export function parseRetainTags(value: unknown): string[] {
+	return [...new Set(asStringList(typeof value === "string" ? [value] : value))];
+}
+
+export function configuredRetainTags(
+	global: Partial<HindsightConfig>,
+	project: Partial<HindsightConfig>,
+): string[] {
+	const { retain_tags = envList("HINDSIGHT_RETAIN_TAGS") } = {
+		...global,
+		...project,
+	};
+	return parseRetainTags(retain_tags);
 }
 
 /**

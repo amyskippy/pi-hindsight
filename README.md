@@ -225,6 +225,7 @@ context.
 | Key | Env | Default | Meaning |
 | --- | --- | --- | --- |
 | `bankId` | `HINDSIGHT_BANK` | — (dormant) | Set a bank name, `"auto"` for the working folder name, or `"repo"` for the Git repository name |
+| `retain_tags` | `HINDSIGHT_RETAIN_TAGS` | `[]` | One tag string or an array of tags to add to retained memories |
 | `userBankId` | `HINDSIGHT_USER_BANK` | `""` (off) | User bank; adds `hindsight_retain_user` and the user block |
 | `baseUrl` | `HINDSIGHT_BASE_URL` | `http://localhost:8888` | Hindsight API base URL |
 | `namespace` | `HINDSIGHT_NAMESPACE` | `default` | API namespace |
@@ -246,6 +247,18 @@ URL, strips a trailing `.git`, and slugifies the name. Without a usable
 Git is unavailable, it behaves like `"auto"` and uses the working folder.
 Set `"bankId": "repo"` in `~/.pi/agent/hindsight.json` to make it the default
 where neither the project config nor `HINDSIGHT_BANK` declares a bank.
+
+Set `"retain_tags": "user:amy"` in `~/.pi/agent/hindsight.json` to tag memory
+writes across projects, or in `.pi/hindsight.json` to scope the tag to one
+project. For multiple tags, use an array such as
+`"retain_tags": ["user:amy", "team:platform"]`, or set the environment variable
+`HINDSIGHT_RETAIN_TAGS` to a comma-separated list such as
+`user:amy,team:platform`. The project file replaces the global value, which
+replaces the environment value. Use `"retain_tags": []` to clear inherited
+tags. The resulting tags are added alongside the built-in tags on automatic
+summaries and manual writes to the project and user banks. Review edits
+preserve the configured tags recorded with the original write, or use the
+origin project's current config for older entries.
 
 Everything else — fact categories, recall effort and budgets, model fallback
 chains, missions, the task detector — has sensible defaults and is edited in

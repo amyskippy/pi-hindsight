@@ -359,6 +359,59 @@ const ids = (): string => JSON.stringify(loadPending().map((p) => p.docId).sort(
 	);
 }
 
+// --- Review edits preserve configured tags on the stored document ----------
+{
+	const { patchConfigFile } = await import("../src/config.ts");
+	const { editDoc, loadReviewDocs } = await import("../src/review-docs.ts");
+	const origin = path.join(tmpDir, "origin");
+	if (!patchConfigFile(origin, { retain_tags: "user:current" })) {
+		throw new Error("Could not write the origin project's config fixture");
+	}
+	seed([]);
+	const base = {
+		bank: "origin-bank",
+		baseUrl: "http://localhost:8888",
+		namespace: "default",
+		project: origin,
+		reason: "compact",
+	};
+	enqueueAdd({ ...base, docId: "tagged", retainTags: ["user:original", base.bank] });
+	enqueueAdd({ ...base, docId: "cleared", retainTags: [] });
+	enqueueAdd({ ...base, docId: "legacy" });
+
+	const byId = new Map<string, string[]>();
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+		if (init?.method === "POST") {
+			const item = JSON.parse(String(init.body)).items[0];
+			byId.set(item.document_id, item.tags);
+		}
+		return Response.json({});
+	}) as typeof fetch;
+	try {
+		for (const doc of await loadReviewDocs()) {
+			await editDoc(doc, "edited note", "en");
+		}
+		const builtIn = [base.bank, "agent-summary"];
+		check(
+			"review edit keeps the original configured tags with the built-in tags",
+			JSON.stringify(byId.get("tagged")) ===
+				JSON.stringify([...builtIn, "user:original"]),
+		);
+		check(
+			"review edit preserves an explicitly empty tag list",
+			JSON.stringify(byId.get("cleared")) === JSON.stringify(builtIn),
+		);
+		check(
+			"legacy review edit uses tags from the origin project's current config",
+			JSON.stringify(byId.get("legacy")) ===
+				JSON.stringify([...builtIn, "user:current"]),
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+}
+
 // --- README: the documented contract --------------------------------------
 {
 	const readme = fs.readFileSync(

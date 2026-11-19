@@ -14,6 +14,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { HindsightClient } from "../src/hindsight.ts";
 
 // Redirect HOME (used by os.homedir() → globalConfigPath()) and clear any env
 // bank so the base layer stays neutral BEFORE importing the module.
@@ -285,6 +286,68 @@ function slugOf(cwd: string): string {
 		"(i) outside Git, repo mode acts like auto",
 		fallback.active && fallback.bankId === slugOf(outside),
 	);
+}
+
+// (j) configured retain tags are merged into the outgoing item ------------
+{
+	process.env.HINDSIGHT_RETAIN_TAGS = " user:env, team:infra,,user:env ";
+	check(
+		"(j) the environment provides comma-separated default tags",
+		JSON.stringify(loadConfig(tmpHome).retain_tags) ===
+			JSON.stringify(["user:env", "team:infra"]),
+	);
+	writeGlobal({ retain_tags: " user:amy " });
+	check(
+		"(j) the global tag overrides the environment",
+		JSON.stringify(loadConfig(tmpHome).retain_tags) === JSON.stringify(["user:amy"]),
+	);
+	const cwd = makeCwd("retain-tags", {
+		bankId: "project",
+		retain_tags: [" team:platform ", "team:platform", "", 7],
+	});
+	cleanup.push(cwd);
+	const cfg = loadConfig(cwd);
+	check(
+		"(j) normalized project tags override the global and environment tags",
+		JSON.stringify(cfg.retain_tags) === JSON.stringify(["team:platform"]),
+	);
+
+	const cleared = makeCwd("retain-tags-clear", { retain_tags: [] });
+	cleanup.push(cleared);
+	check(
+		"(j) an empty project list clears inherited tags",
+		loadConfig(cleared).retain_tags.length === 0,
+	);
+
+	const requests: { url: string; tags?: string[] }[] = [];
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = (async (url: string, init?: RequestInit) => {
+		const item = JSON.parse(String(init?.body)).items[0];
+		requests.push({ url, tags: item.tags });
+		return Response.json({});
+	}) as typeof fetch;
+	try {
+		await new HindsightClient(cfg).retain("note", {
+			tags: ["project", "agent-summary", "team:platform"],
+		});
+		await new HindsightClient({ ...loadConfig(tmpHome), bankId: "user-bank" }).retain("note");
+		writeGlobal(null);
+		delete process.env.HINDSIGHT_RETAIN_TAGS;
+		await new HindsightClient(loadConfig(tmpHome)).retain("note");
+		check(
+			"(j) configured tags extend built-in tags in the outgoing project request",
+			JSON.stringify(requests[0]?.tags) ===
+				JSON.stringify(["project", "agent-summary", "team:platform"]),
+		);
+		check(
+			"(j) user-bank requests can also carry configured tags",
+			requests[1]?.url.endsWith("/user-bank/memories") &&
+				JSON.stringify(requests[1].tags) === JSON.stringify(["user:amy"]),
+		);
+		check("(j) an untagged request still omits tags", requests[2]?.tags === undefined);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
 }
 
 for (const dir of cleanup) fs.rmSync(dir, { recursive: true, force: true });

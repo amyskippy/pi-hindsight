@@ -14,6 +14,11 @@
 
 import * as path from "node:path";
 import {
+	configuredRetainTags,
+	readGlobalOverrides,
+	readProjectOverrides,
+} from "./config.ts";
+import {
 	type PendingDoc,
 	loadPending,
 	markDone,
@@ -41,6 +46,7 @@ export interface ReviewDoc {
 	 * field existed AND whose project no longer declares one.
 	 */
 	language: string;
+	retainTags?: string[];
 	/** True when the bank could not be reached for this entry. */
 	unreachable: boolean;
 }
@@ -102,6 +108,7 @@ async function hydrate(p: PendingDoc): Promise<ReviewDoc | undefined> {
 		// Legacy entries carry no language: fall back to the origin project's own
 		// config rather than to the reviewing session's.
 		language: p.language || projectLanguage(p.project),
+		retainTags: p.retainTags,
 		unreachable: false,
 	};
 	// Network/timeout: keep it pending but flag it, so the user is not silently
@@ -168,10 +175,16 @@ export async function editDoc(
 		project: path.basename(doc.project) || doc.bank,
 		language,
 	};
+	const configuredTags =
+		doc.retainTags ??
+		configuredRetainTags(
+			readGlobalOverrides(),
+			doc.project ? readProjectOverrides(doc.project) : {},
+		);
 	const item = {
 		content: text,
 		document_id: doc.docId,
-		tags: [doc.bank, "agent-summary"],
+		tags: [...new Set([doc.bank, "agent-summary", ...configuredTags])],
 		context: retainContext("user-edit", provenance),
 		metadata: retainMetadata("user-edit", provenance),
 		timestamp: new Date().toISOString(),

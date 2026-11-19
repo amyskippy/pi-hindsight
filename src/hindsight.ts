@@ -242,10 +242,13 @@ export class HindsightClient {
 		opts: RetainOptions = {},
 		signal?: AbortSignal,
 	): Promise<unknown> {
+		const configuredTags = this.cfg.retain_tags;
 		const item = {
 			content,
 			context: opts.context,
-			tags: opts.tags,
+			tags: configuredTags?.length
+				? [...new Set([...(opts.tags ?? []), ...configuredTags])]
+				: opts.tags,
 			metadata: opts.metadata,
 			timestamp: new Date().toISOString(),
 			document_id: opts.documentId,

@@ -262,6 +262,7 @@ function enqueueReview(
 			namespace: cfg.namespace,
 			project: cwd,
 			reason,
+			retainTags: cfg.retain_tags,
 		});
 	} catch (err) {
 		appendDebug(cwd, "memorize.review.enqueue_error", {
