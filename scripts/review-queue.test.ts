@@ -364,7 +364,7 @@ const ids = (): string => JSON.stringify(loadPending().map((p) => p.docId).sort(
 	const { patchConfigFile } = await import("../src/config.ts");
 	const { editDoc, loadReviewDocs } = await import("../src/review-docs.ts");
 	const origin = path.join(tmpDir, "origin");
-	if (!patchConfigFile(origin, { retain_tags: "user:current" })) {
+	if (!patchConfigFile(origin, { retain_tags: ["user:current", "project:{bankId}"] })) {
 		throw new Error("Could not write the origin project's config fixture");
 	}
 	seed([]);
@@ -405,7 +405,7 @@ const ids = (): string => JSON.stringify(loadPending().map((p) => p.docId).sort(
 		check(
 			"legacy review edit uses tags from the origin project's current config",
 			JSON.stringify(byId.get("legacy")) ===
-				JSON.stringify([...builtIn, "user:current"]),
+				JSON.stringify([...builtIn, "user:current", "project:origin-bank"]),
 		);
 	} finally {
 		globalThis.fetch = originalFetch;

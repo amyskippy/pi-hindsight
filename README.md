@@ -260,6 +260,12 @@ summaries and manual writes to the project and user banks. Review edits
 preserve the configured tags recorded with the original write, or use the
 origin project's current config for older entries.
 
+Use `{bankId}` in any retain tag to insert the resolved project bank ID.
+For example, `"retain_tags": ["user:amy", "team:platform", "project:{bankId}"]`
+adds `project:my-project` when the project bank ID is `my-project`. This also
+works with `"auto"`, `"repo"`, and `HINDSIGHT_RETAIN_TAGS`. Writes to the
+user bank use the project bank ID in the tag.
+
 Everything else — fact categories, recall effort and budgets, model fallback
 chains, missions, the task detector — has sensible defaults and is edited in
 the `/mem` Settings tab.

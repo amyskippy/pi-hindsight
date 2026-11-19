@@ -180,6 +180,7 @@ export async function editDoc(
 		configuredRetainTags(
 			readGlobalOverrides(),
 			doc.project ? readProjectOverrides(doc.project) : {},
+			doc.bank,
 		);
 	const item = {
 		content: text,

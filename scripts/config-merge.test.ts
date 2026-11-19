@@ -82,12 +82,16 @@ function slugOf(cwd: string): string {
 
 // (b) global "auto" activates with folder-slug bank ------------------------
 {
-	writeGlobal({ bankId: "auto" });
+	writeGlobal({ bankId: "auto", retain_tags: "project:{bankId}" });
 	const cwd = makeCwd("b", null);
 	cleanup.push(cwd);
 	const cfg = loadConfig(cwd);
 	check("(b) global auto → active", cfg.active === true);
 	check("(b) global auto → folder-slug bank", cfg.bankId === slugOf(cwd));
+	check(
+		"(b) {bankId} uses the derived folder slug",
+		cfg.retain_tags[0] === `project:${slugOf(cwd)}`,
+	);
 
 	const projectDir = path.join(cwd, "My Project");
 	const posixCwd = projectDir.replace(/\\/g, "/");
@@ -255,11 +259,15 @@ function slugOf(cwd: string): string {
 		);
 	}
 
-	writeGlobal({ bankId: "repo" });
+	writeGlobal({ bankId: "repo", retain_tags: "project:{bankId}" });
 	const global = loadConfig(root);
 	check(
 		"(i) global repo mode activates memory",
 		global.active && global.bankId === "shared-repo",
+	);
+	check(
+		"(i) {bankId} uses the derived repository slug",
+		global.retain_tags[0] === "project:shared-repo",
 	);
 
 	process.env.HINDSIGHT_BANK = "env-bank";
@@ -279,22 +287,29 @@ function slugOf(cwd: string): string {
 	);
 	delete process.env.HINDSIGHT_BANK;
 
-	const outside = makeCwd("repo-fallback", { bankId: "repo" });
+	const outside = makeCwd("repo-fallback", {
+		bankId: "repo",
+		retain_tags: "project:{bankId}",
+	});
 	cleanup.push(outside);
 	const fallback = loadConfig(outside);
 	check(
 		"(i) outside Git, repo mode acts like auto",
 		fallback.active && fallback.bankId === slugOf(outside),
 	);
+	check(
+		"(i) {bankId} uses the folder slug when repo mode falls back",
+		fallback.retain_tags[0] === `project:${slugOf(outside)}`,
+	);
 }
 
 // (j) configured retain tags are merged into the outgoing item ------------
 {
-	process.env.HINDSIGHT_RETAIN_TAGS = " user:env, team:infra,,user:env ";
+	process.env.HINDSIGHT_RETAIN_TAGS = " user:env, project:{bankId},,user:env ";
 	check(
 		"(j) the environment provides comma-separated default tags",
 		JSON.stringify(loadConfig(tmpHome).retain_tags) ===
-			JSON.stringify(["user:env", "team:infra"]),
+			JSON.stringify(["user:env", `project:${slugOf(tmpHome)}`]),
 	);
 	writeGlobal({ retain_tags: " user:amy " });
 	check(
@@ -302,14 +317,22 @@ function slugOf(cwd: string): string {
 		JSON.stringify(loadConfig(tmpHome).retain_tags) === JSON.stringify(["user:amy"]),
 	);
 	const cwd = makeCwd("retain-tags", {
-		bankId: "project",
-		retain_tags: [" team:platform ", "team:platform", "", 7],
+		bankId: "My Project",
+		retain_tags: [
+			"user:amy",
+			" team:platform ",
+			"project:{bankId}",
+			"project:my-project",
+			"",
+			7,
+		],
 	});
 	cleanup.push(cwd);
 	const cfg = loadConfig(cwd);
 	check(
 		"(j) normalized project tags override the global and environment tags",
-		JSON.stringify(cfg.retain_tags) === JSON.stringify(["team:platform"]),
+		JSON.stringify(cfg.retain_tags) ===
+			JSON.stringify(["user:amy", "team:platform", "project:my-project"]),
 	);
 
 	const cleared = makeCwd("retain-tags-clear", { retain_tags: [] });
@@ -328,21 +351,27 @@ function slugOf(cwd: string): string {
 	}) as typeof fetch;
 	try {
 		await new HindsightClient(cfg).retain("note", {
-			tags: ["project", "agent-summary", "team:platform"],
+			tags: ["my-project", "agent-summary", "team:platform"],
 		});
-		await new HindsightClient({ ...loadConfig(tmpHome), bankId: "user-bank" }).retain("note");
+		await new HindsightClient({ ...cfg, bankId: "user-bank" }).retain("note");
 		writeGlobal(null);
 		delete process.env.HINDSIGHT_RETAIN_TAGS;
 		await new HindsightClient(loadConfig(tmpHome)).retain("note");
 		check(
 			"(j) configured tags extend built-in tags in the outgoing project request",
 			JSON.stringify(requests[0]?.tags) ===
-				JSON.stringify(["project", "agent-summary", "team:platform"]),
+				JSON.stringify([
+					"my-project",
+					"agent-summary",
+					"team:platform",
+					"user:amy",
+					"project:my-project",
+				]),
 		);
 		check(
-			"(j) user-bank requests can also carry configured tags",
+			"(j) user-bank requests keep the project ID in configured tags",
 			requests[1]?.url.endsWith("/user-bank/memories") &&
-				JSON.stringify(requests[1].tags) === JSON.stringify(["user:amy"]),
+				JSON.stringify(requests[1].tags) === JSON.stringify(cfg.retain_tags),
 		);
 		check("(j) an untagged request still omits tags", requests[2]?.tags === undefined);
 	} finally {

@@ -302,14 +302,11 @@ export function readGlobalOverrides(
 }
 
 export function loadConfig(cwd: string): HindsightConfig {
-	const base: HindsightConfig = {
-		active: false,
+	const base: Omit<HindsightConfig, "active" | "bankId" | "retain_tags"> = {
 		baseUrl: (
 			process.env.HINDSIGHT_BASE_URL ?? "http://localhost:8888"
 		).replace(/\/+$/, ""),
 		namespace: process.env.HINDSIGHT_NAMESPACE ?? "default",
-		bankId: process.env.HINDSIGHT_BANK ?? defaultBankId(cwd),
-		retain_tags: [],
 		// No cwd-derived fallback on purpose: a user bank is shared across projects,
 		// so guessing one from the folder name would be wrong by construction.
 		userBankId: process.env.HINDSIGHT_USER_BANK ?? "",
@@ -365,7 +362,6 @@ export function loadConfig(cwd: string): HindsightConfig {
 	const global = readGlobalOverrides();
 	const project = readProjectOverrides(cwd);
 	const merged = { ...base, ...global, ...project };
-	merged.retain_tags = configuredRetainTags(global, project);
 	// Chains come from user-edited JSON, so coerce them back to string arrays:
 	// a scalar or malformed value must not crash the model resolver.
 	merged.recallModelChain = asStringList(merged.recallModelChain);
@@ -383,7 +379,12 @@ export function loadConfig(cwd: string): HindsightConfig {
 		merged.autoRecall = false;
 		merged.autoMemorize = false;
 	}
-	return finalizeActivation(merged, base, global, project, cwd);
+	const bank = resolveBank(global, project, cwd);
+	return {
+		...merged,
+		...bank,
+		retain_tags: configuredRetainTags(global, project, bank.bankId),
+	};
 }
 
 /** Coerce an override value into a clean string list (tolerates a bare string). */
@@ -401,29 +402,31 @@ export function parseRetainTags(value: unknown): string[] {
 export function configuredRetainTags(
 	global: Partial<HindsightConfig>,
 	project: Partial<HindsightConfig>,
+	bankId: string,
 ): string[] {
 	const { retain_tags = envList("HINDSIGHT_RETAIN_TAGS") } = {
 		...global,
 		...project,
 	};
-	return parseRetainTags(retain_tags);
+	const tags = parseRetainTags(retain_tags).map((tag) =>
+		tag.replaceAll("{bankId}", () => bankId),
+	);
+	return [...new Set(tags)];
 }
 
 /**
- * Resolve `bankId` + `active` from the merged config plus the raw layers.
+ * Resolve the project bank ID and whether it is active.
  *
  * Activation is gated on an explicitly-declared bank. The declared value is
  * taken project-first, then env `HINDSIGHT_BANK` (treated as project-level),
  * then a global "auto" or "repo". A global name is ignored to keep each
  * project's bank separate. With no declaration, the folder id is inactive.
  */
-function finalizeActivation(
-	merged: HindsightConfig,
-	_base: HindsightConfig,
+function resolveBank(
 	global: Partial<HindsightConfig>,
 	project: Partial<HindsightConfig>,
 	cwd: string,
-): HindsightConfig {
+): Pick<HindsightConfig, "bankId" | "active"> {
 	const projectBank =
 		typeof project.bankId === "string" ? project.bankId.trim() : "";
 	const envBank = process.env.HINDSIGHT_BANK?.trim() ?? "";
@@ -433,10 +436,10 @@ function finalizeActivation(
 	else if (global.bankId === "auto" || global.bankId === "repo")
 		declaredBank = global.bankId;
 
-	let bankId = defaultBankId(cwd);
-	if (declaredBank === "repo") bankId = repoBankId(cwd);
-	else if (declaredBank && declaredBank !== "auto") bankId = slugify(declaredBank);
-	return { ...merged, bankId, active: declaredBank !== undefined };
+	if (declaredBank === "repo") return { bankId: repoBankId(cwd), active: true };
+	if (declaredBank && declaredBank !== "auto")
+		return { bankId: slugify(declaredBank), active: true };
+	return { bankId: defaultBankId(cwd), active: declaredBank === "auto" };
 }
 
 /**
