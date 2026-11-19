@@ -163,8 +163,8 @@ export function slugify(input: string): string {
 
 /** Derive a default bank id from the working directory (project name). */
 function defaultBankId(cwd: string): string {
-	const base = cwd.split("/").filter(Boolean).pop() ?? "default";
-	return slugify(base);
+	// The Windows path parser accepts both backslashes and forward slashes.
+	return slugify(path.win32.basename(cwd));
 }
 
 /**

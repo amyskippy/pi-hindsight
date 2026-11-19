@@ -51,7 +51,7 @@ function makeCwd(name: string, obj: Record<string, unknown> | null): string {
 
 const cleanup: string[] = [tmpHome];
 function slugOf(cwd: string): string {
-	return (cwd.split("/").filter(Boolean).pop() ?? "default")
+	return path.basename(cwd)
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-+|-+$/g, "")
@@ -86,6 +86,18 @@ function slugOf(cwd: string): string {
 	const cfg = loadConfig(cwd);
 	check("(b) global auto → active", cfg.active === true);
 	check("(b) global auto → folder-slug bank", cfg.bankId === slugOf(cwd));
+
+	const projectDir = path.join(cwd, "My Project");
+	const posixCwd = projectDir.replace(/\\/g, "/");
+	const windowsCwd = projectDir.replace(/\//g, "\\");
+	check(
+		"(b) auto derives the bank from a slash-separated path",
+		loadConfig(posixCwd).bankId === "my-project",
+	);
+	check(
+		"(b) auto derives the same bank from a backslash-separated path",
+		loadConfig(windowsCwd).bankId === "my-project",
+	);
 }
 
 // (c) global concrete bankId does NOT activate -----------------------------
