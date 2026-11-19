@@ -10,6 +10,7 @@
  * env(base) → global → project plus the activation rules.
  */
 
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -218,6 +219,72 @@ function slugOf(cwd: string): string {
 		).reviewAutoApproveDays === 0,
 	);
 	writeGlobal(null);
+}
+
+// (i) "repo" derives the bank from Git and falls back to the folder --------
+{
+	const root = makeCwd("repo", null);
+	cleanup.push(root);
+	execFileSync("git", ["init", "--quiet"], { cwd: root });
+	const cwd = path.join(root, "Nested Project");
+	fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+	fs.writeFileSync(
+		path.join(cwd, ".pi", "hindsight.json"),
+		JSON.stringify({ bankId: "repo" }),
+	);
+
+	const local = loadConfig(cwd);
+	check("(i) repo mode in a project config activates memory", local.active);
+	check(
+		"(i) a repo without origin uses its root folder",
+		local.bankId === slugOf(root),
+	);
+
+	for (const origin of [
+		"https://example.com/team/Shared-Repo.git",
+		"git@example.com:Shared-Repo.git",
+		"C:\\Repos\\Shared-Repo.git",
+	]) {
+		execFileSync("git", ["config", "--local", "remote.origin.url", origin], {
+			cwd: root,
+		});
+		check(
+			`(i) uses the origin basename from ${origin}`,
+			loadConfig(cwd).bankId === "shared-repo",
+		);
+	}
+
+	writeGlobal({ bankId: "repo" });
+	const global = loadConfig(root);
+	check(
+		"(i) global repo mode activates memory",
+		global.active && global.bankId === "shared-repo",
+	);
+
+	process.env.HINDSIGHT_BANK = "env-bank";
+	check(
+		"(i) the env bank overrides global repo mode",
+		loadConfig(root).bankId === "env-bank",
+	);
+	check(
+		"(i) project repo mode overrides the env bank",
+		loadConfig(cwd).bankId === "shared-repo",
+	);
+	process.env.HINDSIGHT_BANK = "repo";
+	writeGlobal(null);
+	check(
+		"(i) HINDSIGHT_BANK can enable repo mode",
+		loadConfig(root).bankId === "shared-repo",
+	);
+	delete process.env.HINDSIGHT_BANK;
+
+	const outside = makeCwd("repo-fallback", { bankId: "repo" });
+	cleanup.push(outside);
+	const fallback = loadConfig(outside);
+	check(
+		"(i) outside Git, repo mode acts like auto",
+		fallback.active && fallback.bankId === slugOf(outside),
+	);
 }
 
 for (const dir of cleanup) fs.rmSync(dir, { recursive: true, force: true });

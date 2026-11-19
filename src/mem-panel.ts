@@ -345,7 +345,7 @@ function settingItems(deps: PanelDeps, mk: Submenus): SettingItem[] {
 				"Bank id (project)",
 				cfg.active
 					? `Active — this project's memory goes to bank "${cfg.bankId}".`
-					: 'Inactive: no bank declared here. Set a name (or "auto") to activate memory in this project.',
+					: 'Set a bank name, "auto" for the working folder, or "repo" for the Git repository.',
 			),
 			currentValue: project.bankId ? String(project.bankId) : "(none)",
 		},
@@ -442,6 +442,7 @@ class MemPanel implements Component {
 	);
 	private health: boolean | undefined;
 	private counts: { documents: number; facts: number } | undefined;
+	private statusConfig: HindsightConfig | undefined;
 	private docs: ReviewDoc[] = [];
 	private docIndex = 0;
 	private docScroll = 0;
@@ -663,6 +664,7 @@ class MemPanel implements Component {
 	}
 
 	private async refreshStatus(): Promise<void> {
+		this.statusConfig = undefined;
 		try {
 			await this.deps.client.health();
 			this.health = true;
@@ -1032,7 +1034,8 @@ class MemPanel implements Component {
 	}
 
 	private renderStatus(w: number): string[] {
-		const cfg = this.deps.loadCfg();
+		// Repo mode can invoke Git. Resolve the config once per Status refresh.
+		const cfg = (this.statusConfig ??= this.deps.loadCfg());
 		const chains = this.deps.modelChains();
 		const health =
 			this.health === undefined

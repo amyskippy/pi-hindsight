@@ -5,6 +5,7 @@
  * extension works out-of-the-box against a local Hindsight instance.
  */
 
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -165,6 +166,28 @@ export function slugify(input: string): string {
 function defaultBankId(cwd: string): string {
 	// The Windows path parser accepts both backslashes and forward slashes.
 	return slugify(path.win32.basename(cwd));
+}
+
+function gitOutput(cwd: string, ...args: string[]): string {
+	const result = spawnSync("git", args, {
+		cwd,
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "ignore"],
+		windowsHide: true,
+	});
+	return result.status === 0 ? result.stdout.trim() : "";
+}
+
+function repoBankId(cwd: string): string {
+	const root = gitOutput(cwd, "rev-parse", "--show-toplevel");
+	if (!root) return defaultBankId(cwd);
+
+	const origin = gitOutput(cwd, "config", "--local", "--get", "remote.origin.url");
+	const remotePath = /^[a-z][a-z\d+.-]*:\/\//i.test(origin)
+		? URL.parse(origin)?.pathname ?? ""
+		: origin.replace(/^(?:[^@:/\\]+@)?(?:\[[^\]]+\]|[^:/\\]+):/, "");
+	const name = path.win32.basename(remotePath).replace(/\.git$/i, "");
+	return name ? slugify(name) : defaultBankId(root);
 }
 
 /**
@@ -370,12 +393,8 @@ function asStringList(v: unknown): string[] {
  *
  * Activation is gated on an explicitly-declared bank. The declared value is
  * taken project-first, then env `HINDSIGHT_BANK` (treated as project-level),
- * then a global `"auto"` — a concrete bankId coming ONLY from the global layer
- * is deliberately ignored, so one named bank is never shared across projects.
- *
- * - explicit name (not "auto") → `bankId = slugify(name)`, `active = true`
- * - "auto"                     → `bankId = defaultBankId(cwd)`, `active = true`
- * - nothing declared          → `active = false`, `bankId = defaultBankId(cwd)`
+ * then a global "auto" or "repo". A global name is ignored to keep each
+ * project's bank separate. With no declaration, the folder id is inactive.
  */
 function finalizeActivation(
 	merged: HindsightConfig,
@@ -390,22 +409,13 @@ function finalizeActivation(
 	let declaredBank: string | undefined;
 	if (projectBank) declaredBank = projectBank;
 	else if (envBank) declaredBank = envBank;
-	else if (global.bankId === "auto") declaredBank = "auto";
-	else declaredBank = undefined;
+	else if (global.bankId === "auto" || global.bankId === "repo")
+		declaredBank = global.bankId;
 
-	let active: boolean;
-	let bankId: string;
-	if (declaredBank && declaredBank !== "auto") {
-		bankId = slugify(declaredBank);
-		active = true;
-	} else if (declaredBank === "auto") {
-		bankId = defaultBankId(cwd);
-		active = true;
-	} else {
-		bankId = defaultBankId(cwd);
-		active = false;
-	}
-	return { ...merged, bankId, active };
+	let bankId = defaultBankId(cwd);
+	if (declaredBank === "repo") bankId = repoBankId(cwd);
+	else if (declaredBank && declaredBank !== "auto") bankId = slugify(declaredBank);
+	return { ...merged, bankId, active: declaredBank !== undefined };
 }
 
 /**

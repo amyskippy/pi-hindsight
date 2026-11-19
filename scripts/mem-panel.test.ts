@@ -8,8 +8,11 @@
  * focus, so the panel can never trap the user on one tab.
  */
 
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import type { HindsightConfig } from "../src/config.ts";
+import { patchConfigFile, type HindsightConfig } from "../src/config.ts";
 import type { HindsightClient } from "../src/hindsight.ts";
 import { openMemPanel } from "../src/mem-panel.ts";
 
@@ -117,6 +120,8 @@ check("Esc on the tab strip closes the panel", closed, true);
 function openAt(
 	rows: number,
 	columns: number,
+	cwd = "/tmp",
+	loadCfg = () => cfg,
 ): { render(w: number): string[]; handleInput(d: string): void } {
 	let made!: { render(w: number): string[]; handleInput(d: string): void };
 	const c = {
@@ -132,8 +137,8 @@ function openAt(
 		},
 	};
 	void openMemPanel(c as never, {
-		cwd: "/tmp",
-		loadCfg: () => cfg,
+		cwd,
+		loadCfg,
 		client,
 		modelChains: () => ({ recall: "a/b", retain: "a/b" }),
 	});
@@ -161,6 +166,59 @@ for (const [rows, columns] of [
 	const height = [...heights][0];
 	check(`${rows}x${columns}: height never changes`, [...heights], [height]);
 	check(`${rows}x${columns}: height fits the terminal`, height <= rows, true);
+}
+
+const bankSettingsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mem-panel-bank-"));
+try {
+	for (const [mode, bankId] of [
+		[undefined, "working-folder"],
+		["auto", "working-folder"],
+		["repo", "remote-repo"],
+		["repo", "working-folder"],
+	] as const) {
+		if (mode && !patchConfigFile(bankSettingsDir, { bankId: mode })) {
+			throw new Error("Could not write the bank settings fixture");
+		}
+		let configReads = 0;
+		const p = openAt(24, 100, bankSettingsDir, () => {
+			configReads++;
+			return { ...cfg, bankId, active: mode !== undefined };
+		});
+		const label = mode ?? "(none)";
+		const status = p.render(100).map(strip).find((line) => /^\s*Bank\s+/.test(line));
+		check(
+			`Status shows ${bankId} with Settings set to ${label}`,
+			status?.includes(`${bankId}${mode ? "" : "  (INACTIVE)"} ·`),
+			true,
+		);
+		const readsAfterRender = configReads;
+		p.render(100);
+		check(
+			"redrawing Status reuses its resolved config",
+			configReads,
+			readsAfterRender,
+		);
+		p.handleInput("r");
+		p.render(100);
+		check(
+			"refreshing Status reloads its resolved config",
+			configReads,
+			readsAfterRender + 1,
+		);
+
+		p.handleInput("\t");
+		const settingsRow = p.render(100)
+			.map(strip)
+			.find((line) => line.includes("Bank id (project)"));
+		const shownSetting = settingsRow?.split("Bank id (project)")[1]?.trim();
+		check(
+			`Settings shows ${label} with a resolved bank of ${bankId}`,
+			shownSetting,
+			label,
+		);
+	}
+} finally {
+	fs.rmSync(bankSettingsDir, { recursive: true, force: true });
 }
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

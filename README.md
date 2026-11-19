@@ -224,7 +224,7 @@ context.
 
 | Key | Env | Default | Meaning |
 | --- | --- | --- | --- |
-| `bankId` | `HINDSIGHT_BANK` | — (dormant) | Project bank id; set it (or `"auto"` for a folder-derived id) to activate |
+| `bankId` | `HINDSIGHT_BANK` | — (dormant) | Set a bank name, `"auto"` for the working folder name, or `"repo"` for the Git repository name |
 | `userBankId` | `HINDSIGHT_USER_BANK` | `""` (off) | User bank; adds `hindsight_retain_user` and the user block |
 | `baseUrl` | `HINDSIGHT_BASE_URL` | `http://localhost:8888` | Hindsight API base URL |
 | `namespace` | `HINDSIGHT_NAMESPACE` | `default` | API namespace |
@@ -238,6 +238,14 @@ context.
 | `reviewAutoApproveDays` | `HINDSIGHT_REVIEW_AUTO_APPROVE_DAYS` | `7` | Days before a pending review entry auto-approves; `0` disables |
 | — | `HINDSIGHT_AUTO_OFF` | `false` | Kill switch for spawned processes: forces both contours off over every layer |
 | `debug` | `HINDSIGHT_DEBUG` | `false` | Verbose logging — may leak sensitive data |
+
+To enable repository-based bank IDs, set `"bankId": "repo"` in
+`.pi/hindsight.json`. This mode uses the last component of the Git `origin`
+URL, strips a trailing `.git`, and slugifies the name. Without a usable
+`origin`, it uses the repository root folder. Outside a Git worktree, or when
+Git is unavailable, it behaves like `"auto"` and uses the working folder.
+Set `"bankId": "repo"` in `~/.pi/agent/hindsight.json` to make it the default
+where neither the project config nor `HINDSIGHT_BANK` declares a bank.
 
 Everything else — fact categories, recall effort and budgets, model fallback
 chains, missions, the task detector — has sensible defaults and is edited in
