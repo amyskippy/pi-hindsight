@@ -37,10 +37,12 @@ function panelDeps(
 	ctx: ExtensionContext,
 	cwd: string,
 	s: NonNullable<State>,
+	reviewConfigError: PanelDeps["reviewConfigError"],
 ): PanelDeps {
 	return {
 		cwd,
 		loadCfg: () => loadConfig(cwd),
+		reviewConfigError,
 		client: s.client,
 		modelChains: () => ({
 			recall: resolveChain(ctx, s.cfg, "recall")?.label ?? "(none)",
@@ -89,6 +91,7 @@ export function registerCommands(
 	getMemorizer: () => Memorizer | undefined,
 	status: HindsightStatus,
 	runtime: Runtime,
+	reviewConfigError: PanelDeps["reviewConfigError"],
 ): void {
 	// --- dashboard hub ------------------------------------------------------
 	// The single entry to Status / Settings / Review / Log. This is the ONLY
@@ -105,7 +108,7 @@ export function registerCommands(
 			const s = getState();
 			if (!s) return ctx.ui.notify(`${TAG} not initialized`, "error");
 			try {
-				await openMemPanel(ctx, panelDeps(ctx, cwd, s));
+				await openMemPanel(ctx, panelDeps(ctx, cwd, s, reviewConfigError));
 			} catch (err) {
 				appendDebug(cwd, "command.mem.error", {
 					error: (err as Error).message,
@@ -328,16 +331,20 @@ export function registerCommands(
 	// keyboard; the same content also lives in /mem.
 	pi.registerShortcut("alt+h", {
 		description: "Open memory history",
-		handler: async (ctx) => openLog(ctx, getState()),
+		handler: async (ctx) => openLog(ctx, getState(), reviewConfigError),
 	});
 }
 
-async function openLog(ctx: ExtensionContext, s: State): Promise<void> {
+async function openLog(
+	ctx: ExtensionContext,
+	s: State,
+	reviewConfigError: PanelDeps["reviewConfigError"],
+): Promise<void> {
 	appendDebug(ctx.cwd ?? process.cwd(), "command.mem-log.start", {
 		initialized: !!s,
 	});
 	if (!s) return ctx.ui.notify(`${TAG} not initialized`, "error");
 	const cwd = ctx.cwd ?? process.cwd();
-	await openMemPanel(ctx, panelDeps(ctx, cwd, s));
+	await openMemPanel(ctx, panelDeps(ctx, cwd, s, reviewConfigError));
 	appendDebug(cwd, "command.mem-log.done");
 }

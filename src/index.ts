@@ -598,7 +598,9 @@ export default function (pi: ExtensionAPI) {
 	}
 	userBank = userBankOf(loadCfg);
 	registerTools(pi, getState, getUserBank, onUserBankWrite);
-	registerCommands(pi, getState, () => memorizer, status, runtime);
+	registerCommands(pi, getState, () => memorizer, status, runtime, latest =>
+		userConfigError(latest) ?? userBank?.cfg.configError,
+	);
 
 	pi.on("session_start", async (_event, ctx) => {
 		const sessionName = ctx.sessionManager?.getSessionName?.();

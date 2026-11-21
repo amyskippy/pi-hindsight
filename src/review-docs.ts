@@ -13,9 +13,9 @@
  */
 
 import * as path from "node:path";
-import { loadConfig } from "./config.ts";
+import { loadConfig, type HindsightConfig } from "./config.ts";
 import { HindsightClient } from "./hindsight.ts";
-import { bankScope, retainSnapshot, type RetainSnapshot } from "./memory-scope.ts";
+import { bankScope, retainSnapshot, scopeMode, type RetainSnapshot } from "./memory-scope.ts";
 import {
 	type PendingDoc,
 	loadPending,
@@ -58,6 +58,15 @@ function safeBaseUrl(u: string): string | undefined {
 		!url.username && !url.password && !url.search && !url.hash)
 		return url.href.replace(/\/+$/, "");
 	return undefined;
+}
+
+function sameLocalServer(left: string, right: string): boolean {
+	const base = safeBaseUrl(right);
+	if (!base) return false;
+	const first = new URL(left);
+	const second = new URL(base);
+	// Both addresses have already been restricted to IPv4 loopback or localhost.
+	return first.port === second.port && first.pathname === second.pathname;
 }
 
 function bankBase(doc: {
@@ -175,6 +184,7 @@ export async function editDoc(
 	doc: ReviewDoc,
 	text: string,
 	language: string,
+	reviewingConfig?: HindsightConfig,
 ): Promise<void> {
 	const provenance = {
 		project: path.basename(doc.project) || doc.bank,
@@ -185,6 +195,12 @@ export async function editDoc(
 	// Historical queue entries come from automatic project retention. Only an
 	// explicit snapshot can establish that an entry was originally global.
 	const role = doc.retainSnapshot?.scope === "user-or-shared" ? "global" : "project";
+	if (reviewingConfig?.configError) throw new Error(reviewingConfig.configError);
+	if (role === "project" && reviewingConfig?.userBankId === doc.bank &&
+		reviewingConfig.namespace === doc.namespace &&
+		sameLocalServer(baseUrl, reviewingConfig.baseUrl) &&
+		scopeMode(reviewingConfig, "global") === "user-or-shared")
+		throw new Error("The reviewing checkout uses this project document's bank as its scoped global bank");
 	const config = role === "global"
 		? { ...loadConfig(doc.project), userBankId: doc.bank }
 		: loadConfig(doc.project, doc.bank);

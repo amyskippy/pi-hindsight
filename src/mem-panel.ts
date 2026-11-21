@@ -61,6 +61,8 @@ export interface PanelDeps {
 	cwd: string;
 	/** Re-read the resolved config so edits show up immediately. */
 	loadCfg: () => HindsightConfig;
+	/** Check freshly read config against the active session before saving a review edit. */
+	reviewConfigError?: (config: HindsightConfig) => string | undefined;
 	/** Client bound to the active bank, for health/stats. */
 	client: HindsightClient;
 	/** Model chain labels for the Status tab. */
@@ -811,10 +813,14 @@ class MemPanel implements Component {
 			// a per-project setting: re-extracting a foreign bank's document in THIS
 			// project's language would silently rewrite it. The language recorded on
 			// the entry at enqueue time wins; this project's is only the last resort.
+			const reviewingConfig = this.deps.loadCfg();
+			const configError = this.deps.reviewConfigError?.(reviewingConfig);
+			if (configError) throw new Error(configError);
 			await editDoc(
 				doc,
 				text,
-				doc.language || this.deps.loadCfg().memoryLanguage,
+				doc.language || reviewingConfig.memoryLanguage,
+				reviewingConfig,
 			);
 			doc.text = text;
 			this.message = "saved — the bank is re-extracting the facts";
