@@ -29,6 +29,9 @@ export interface HindsightConfig {
 	/** Validated by each bank operation so a bad policy cannot broaden a read. */
 	memory?: unknown;
 	identity?: Partial<Record<"user" | "project" | "agent", string>>;
+	configError?: string;
+	/** Override files successfully read for this configuration. */
+	overrideFiles?: string[];
 	/**
 	 * Optional second bank holding what is true across projects (how the person
 	 * works, not what the code is). Empty = not wired: no client, no tool.
@@ -307,21 +310,20 @@ export function globalConfigPath(): string {
 	return path.join(homeDir(), ".pi", "agent", "hindsight.json");
 }
 
-/** Read a JSON override file, keeping only allow-listed keys. Never throws. */
-function readOverridesFile(file: string): Partial<HindsightConfig> {
+/** An optional file may be absent. Other failures cannot safely inherit policy. */
+function readOverridesFile(file: string): { overrides: Partial<HindsightConfig>; loaded?: string; error?: string } {
 	try {
-		const obj = JSON.parse(fs.readFileSync(file, "utf8")) as Record<
-			string,
-			unknown
-		>;
+		const obj: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+		if (!configObject(obj)) throw new Error("Expected a JSON object");
 		const out: Partial<HindsightConfig> = {};
 		for (const [k, v] of Object.entries(obj)) {
 			if (CONFIG_ALLOW.has(k as keyof HindsightConfig))
 				(out as Record<string, unknown>)[k] = v;
 		}
-		return out;
-	} catch {
-		return {};
+		return { overrides: out, loaded: file };
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { overrides: {} };
+		return { overrides: {}, error: `Cannot load memory policy from ${file}` };
 	}
 }
 
@@ -331,7 +333,7 @@ function readOverridesFile(file: string): Partial<HindsightConfig> {
  * running pi process. File values win over env defaults and global overrides.
  */
 export function readProjectOverrides(cwd: string): Partial<HindsightConfig> {
-	return readOverridesFile(projectConfigPath(cwd));
+	return readOverridesFile(projectConfigPath(cwd)).overrides;
 }
 
 /**
@@ -342,7 +344,7 @@ export function readProjectOverrides(cwd: string): Partial<HindsightConfig> {
 export function readGlobalOverrides(
 	file: string = globalConfigPath(),
 ): Partial<HindsightConfig> {
-	return readOverridesFile(file);
+	return readOverridesFile(file).overrides;
 }
 
 export function loadConfig(cwd: string, recordedBankId?: string): HindsightConfig {
@@ -403,8 +405,10 @@ export function loadConfig(cwd: string, recordedBankId?: string): HindsightConfi
 		reviewAutoApproveDays: envInt("HINDSIGHT_REVIEW_AUTO_APPROVE_DAYS", 7),
 		debug: envBool("HINDSIGHT_DEBUG", false),
 	};
-	const global = readGlobalOverrides();
-	const project = readProjectOverrides(cwd);
+	const globalFile = readOverridesFile(globalConfigPath());
+	const projectFile = readOverridesFile(projectConfigPath(cwd));
+	const global = globalFile.overrides;
+	const project = projectFile.overrides;
 	const merged = { ...base, ...global, ...project };
 	// Chains come from user-edited JSON, so coerce them back to string arrays:
 	// a scalar or malformed value must not crash the model resolver.
@@ -430,6 +434,8 @@ export function loadConfig(cwd: string, recordedBankId?: string): HindsightConfi
 		...bank,
 		bankId,
 		memory: mergeMemory(global.memory, project.memory),
+		configError: projectFile.error ?? globalFile.error,
+		overrideFiles: [globalFile.loaded, projectFile.loaded].filter((file): file is string => !!file),
 		identity: memoryIdentity(cwd, recordedBankId),
 		retain_tags: configuredRetainTags(global, project, bankId),
 	};

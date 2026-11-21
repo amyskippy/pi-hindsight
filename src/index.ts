@@ -166,7 +166,14 @@ export default function (pi: ExtensionAPI) {
 			? { cfg: c, client: new HindsightClient(c, "global") }
 			: undefined;
 	let userBank: ReturnType<typeof userBankOf>;
+	let lastUserConfig: HindsightConfig | undefined;
 	const getUserBank = () => userBank;
+	const userConfigError = (latest: HindsightConfig): string | undefined => {
+		if (latest.configError) return latest.configError;
+		const missingFile = lastUserConfig?.overrideFiles?.find(file => !latest.overrideFiles?.includes(file));
+		if (missingFile)
+			return `Cannot load memory policy from ${missingFile}. Restore the file or use /reload if it was removed intentionally.`;
+	};
 
 	// Mode guard: when pi opens THIS plugin's own dev checkout, the project's
 	// local `.pi/extensions/hindsight.ts` loads the working-tree source. If the
@@ -393,7 +400,7 @@ export default function (pi: ExtensionAPI) {
 	 * Open an epoch: read the user bank once and freeze what it yields.
 	 *
 	 * Transient read failures may reuse the previous block for the same policy.
-	 * An invalid memory policy clears the block.
+	 * An unreadable policy clears the block before any bank request is made.
 	 */
 	const openUserEpoch = async (
 		cwd: string,
@@ -408,7 +415,7 @@ export default function (pi: ExtensionAPI) {
 		const ub = userBank;
 		const policy = ub ? JSON.stringify([
 			ub.cfg.baseUrl, ub.cfg.namespace, ub.cfg.userBankId, ub.cfg.bankId,
-			ub.cfg.identity, ub.cfg.memory,
+			ub.cfg.identity, ub.cfg.memory, ub.cfg.configError,
 		]) : undefined;
 		if (policy !== userBlockPolicy) {
 			userBlockPolicy = policy;
@@ -553,6 +560,7 @@ export default function (pi: ExtensionAPI) {
 		cfg = loadConfig(cwd);
 		client = new HindsightClient(cfg, "project");
 		userBank = userBankOf(cfg);
+		lastUserConfig = cfg.configError ? undefined : cfg;
 		setDebugEnabled(cfg.debug);
 		// Retire the previous Memorizer before creating a new one.
 		memorizer?.dispose();
@@ -715,6 +723,16 @@ export default function (pi: ExtensionAPI) {
 		const cwd = ctx.cwd ?? process.cwd();
 		const latest = loadConfig(cwd);
 		const reason = `compact:${event.reason}`;
+		const configError = userConfigError(latest);
+		if (configError) {
+			// Keep the previous coordinates so the marker and tool can report the
+			// bad policy even when it was the only file that declared the bank.
+			const previous = lastUserConfig?.userBankId ? lastUserConfig : latest;
+			userBank = userBankOf({ ...previous, configError });
+			await openUserEpoch(cwd, reason, ctx.ui);
+			return;
+		}
+		lastUserConfig = latest;
 		// The project client remains tied to the session. Check the global bank
 		// against that active project bank as well as newly configured policy.
 		userBank = userBankOf({ ...latest, bankId: cfg?.bankId ?? latest.bankId });

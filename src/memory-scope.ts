@@ -19,6 +19,7 @@ const DEFAULT_TAGS = {
 export class MemoryScopeError extends Error {}
 
 function policy(cfg: HindsightConfig, role: BankRole): Record<string, unknown> {
+	if (cfg.configError) throw new MemoryScopeError(cfg.configError);
 	const memory = cfg.memory;
 	if (memory === undefined) return {};
 	if (!memory || typeof memory !== "object" || Array.isArray(memory))
