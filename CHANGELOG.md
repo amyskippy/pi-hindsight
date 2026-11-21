@@ -3,6 +3,14 @@
 Each `## <version>` entry below is what the extension shows you, once, the
 first time a session starts after an upgrade to that version.
 
+## Unreleased
+
+Global and project banks can opt into separate recall scopes and tag filters.
+Hindsight applies these filters before ranking and token limits. Scoped writes
+preserve the tags needed by derived observations, and review edits use saved
+tag snapshots. See the [migration instructions](README.md#migrate-an-existing-bank)
+before enabling scope on existing banks.
+
 ## 0.5.2
 
 Works with Pi 1.4. Runs started by an extension message rather than by your

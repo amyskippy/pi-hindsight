@@ -99,8 +99,7 @@ path, the `hindsight_retain` tool and per-turn recall all work against it. The
 user bank holds standing facts about the **person**, true in any repository —
 how you like to work, your tools, your prohibitions. Enable it with `userBankId`
 (or `HINDSIGHT_USER_BANK`) and the agent gains a dedicated write tool,
-`hindsight_retain_user` — the only path that can reach the user bank: the
-automatic pipeline is wired to the project bank and structurally cannot touch it.
+`hindsight_retain_user`. The automatic pipeline writes to the project bank.
 
 ## The user block in the system prompt
 
@@ -135,8 +134,10 @@ long session several-fold. So a fact written now appears at the next boundary
 > only; a marker with anything unparsed is refused whole, and a parsed marker
 > that cannot be answered (no server, empty bank, a model still generating) is
 > **removed** from the prompt rather than left in it. Your file is never edited
-> — you are warned once per session instead, and a block built at an earlier
-> boundary survives a failed one as a stale cache.
+> — the extension reports failures in Pi. After a temporary read failure, the
+> prior block can stay in use if the bank, identity, and policy still match.
+> With [scope-aware memory](#scope-aware-memory), the bare marker requires a
+> filter the list endpoint can express, and stored-model markers are unavailable.
 
 ## How it works
 
@@ -174,14 +175,20 @@ facts never die.
 
 ### Review (`/mem` → Review tab)
 
-Every stored document also lands in a global review queue, and the Review tab
+Automatically captured project documents land in a global review queue, and the Review tab
 walks the pending ones: approve, edit (re-stored under the same id, replacing
 the old facts), or delete. An entry nobody touches for 7 days is approved
 automatically (`reviewAutoApproveDays`; `0` keeps everything pending forever)
 — safe, because the document was already stored in the bank the moment it was
 enqueued: approval leaves the bank untouched, and delete is the only action
 that removes anything. In the review log, an entry without a name means a
-person ended the review; `expiry` or `auto` means the machinery did.
+person ended the review; `expiry` or `auto` means the machinery did. Edits
+reuse the saved tag snapshot, including an empty list. For older entries, the
+extension uses the stored document tags if present and otherwise resolves tags
+from the recorded project and bank. The edit checks both projects' on-disk
+configuration when you save and respects the active session's config guard.
+Finish pending reviews before reassigning a bank or changing ownership tags,
+since an older review snapshot can overwrite tags applied later.
 
 ## Install
 
@@ -225,8 +232,9 @@ context.
 | Key | Env | Default | Meaning |
 | --- | --- | --- | --- |
 | `bankId` | `HINDSIGHT_BANK` | — (dormant) | Set a bank name, `"auto"` for the working folder name, or `"repo"` for the Git repository name |
-| `retain_tags` | `HINDSIGHT_RETAIN_TAGS` | `[]` | One tag string or an array of tags to add to retained memories |
+| `retain_tags` | `HINDSIGHT_RETAIN_TAGS` | `[]` | Legacy automatic tags for banks without an explicit `retainTags` |
 | `userBankId` | `HINDSIGHT_USER_BANK` | `""` (off) | User bank; adds `hindsight_retain_user` and the user block |
+| `memory` | — | Scope off | [Per-bank retention tags, recall scope, and recall filters](#scope-aware-memory) |
 | `baseUrl` | `HINDSIGHT_BASE_URL` | `http://localhost:8888` | Hindsight API base URL |
 | `namespace` | `HINDSIGHT_NAMESPACE` | `default` | API namespace |
 | `autoRecall` | `HINDSIGHT_AUTO_RECALL` | `true` | Search memory before each turn |
@@ -256,11 +264,10 @@ project. For multiple tags, use an array such as
 `user:amy,team:platform`. The project file replaces the global value, which
 replaces the environment value. Use `"retain_tags": []` to clear inherited
 tags. The resulting tags are added alongside the built-in tags on automatic
-summaries and manual writes to the project and user banks. Review edits
-preserve the configured tags recorded with the original write, or use the
-origin project's current config for older entries.
+summaries and manual writes to the project and user banks unless that bank
+declares its own `retainTags`.
 
-Use `{bankId}` in any retain tag to insert the resolved project bank ID.
+Use `{bankId}` in a legacy `retain_tags` entry to insert the resolved project bank ID.
 For example, `"retain_tags": ["user:amy", "team:platform", "project:{bankId}"]`
 adds `project:my-project` when the project bank ID is `my-project`. This also
 works with `"auto"`, `"repo"`, and `HINDSIGHT_RETAIN_TAGS`. Writes to the
@@ -280,6 +287,114 @@ extension cannot verify the agreement: `GET /v1/{ns}/banks/{bank}/config`
 returns no language key at all, so keeping the three settings in agreement is
 left to the reader.
 
+### Scope-aware memory
+
+Enable each bank independently in `~/.pi/agent/hindsight.json` or
+`.pi/hindsight.json`. Keep `bankId` and `userBankId` distinct when using scope.
+Use the exact section names `memory.global` and `memory.project`.
+The project client loads its policy at session start. The global client also
+refreshes its policy at each completed compaction. Use `/reload` to refresh
+both clients after editing the config.
+An existing config that cannot be read or parsed blocks memory operations that
+need its policy. At compaction, such a failure clears the global prompt block
+until a boundary can load valid config again. If a previously loaded config
+file goes missing at compaction, the global prompt block clears and the
+`hindsight_retain_user` tool pauses. Review saves also reject a missing
+previously loaded file and respect that pause. Restore the file for the next
+compaction, or use `/reload` to apply an intentional removal. Files absent at
+session start are optional.
+
+```json
+{
+  "memory": {
+    "global": {
+      "recallScope": "user-or-shared",
+      "retainTags": ["user:{user}"],
+      "recallFilters": []
+    },
+    "project": {
+      "recallScope": "project",
+      "retainTags": ["user:{user}", "project:{project}", "agent:{agent}"],
+      "recallFilters": []
+    }
+  }
+}
+```
+
+The global policy admits the current user's memories and shared memories.
+Global writes derive `scope:shared` from the absence of any `user:` tag.
+The project policy requires the exact current `project:` tag. Scoped writes
+use the full effective tag set for observations. When present, `recallFilters`
+requires a match on at least one listed tag in addition to the bank's scope.
+The singular `recallFilter` still controls the relevance judge.
+These filters govern requests made by the extension. Configure Hindsight
+access controls separately for clients that can call the bank API directly.
+
+Fields inherit independently for each bank. An explicit `retainTags` replaces
+the legacy tag list for its bank. An explicit empty array clears automatic tags
+or inherited filters, while required scope tags still apply. Omitted
+`retainTags` uses the scoped defaults shown above and appends legacy tags.
+Banks without a scope or filters keep their existing recall behavior.
+
+`{user}` uses the OS account, `{project}` uses the Git remote repository name
+with the repository or working directory name as a fallback, and `{agent}`
+defaults to `pi`. Use `HINDSIGHT_USER`, `HINDSIGHT_PROJECT`, or
+`HINDSIGHT_AGENT` to set stable identities across machines or distinguish
+repositories with the same name in a shared bank. Identities are normalized as
+lowercase slugs. In `retainTags` and `recallFilters`, `{bankId}` means the bank
+for that section. Legacy `retain_tags` keeps its project-bank substitution.
+
+For a scoped global prompt block, use a query marker when the filters require
+compound matching, for example `<!-- hindsight:user query: engineering preferences -->`.
+Each client checks the server's OpenAPI schema before its first scoped
+request and caches it for the life of the client. Reload Pi before resuming
+memory operations after replacing or downgrading the Hindsight server.
+The current Reflect API can include untagged directives, and the mental model
+API does not verify the generation policy of stored content. These paths
+report that scoped synthesis or stored-model injection is unavailable.
+[Hindsight Reflect](https://hindsight.vectorize.io/developer/api/reflect)
+[Hindsight mental models](https://hindsight.vectorize.io/developer/api/mental-models)
+
+#### Migrate an existing bank
+
+Pause writers and drain pending jobs before inventory and backfill. Keep
+entity-generated tags out of the reserved `user:` and `project:` namespaces
+and reserve `scope:shared` for ownership normalization. Run the inventory for
+each bank before enabling its policy. Complete outstanding reviews before
+reassigning a bank to a different role.
+
+```sh
+bun scripts/scope-migration.ts global MY_GLOBAL_BANK
+bun scripts/scope-migration.ts project MY_PROJECT_BANK
+```
+
+For project backfill, choose either `--dedicated` when the bank belongs only
+to that project or `--documents approved.json` with a JSON array of document
+IDs whose project ownership is verified. Both dry runs and apply runs reject
+manifest IDs missing from the target bank before planning updates. Run from
+the project checkout or set `HINDSIGHT_PROJECT` to the identity that will be
+used for recall. Add
+`--apply` to write the proposed changes. The script uses the configured server and
+namespace and accepts `HINDSIGHT_MIGRATION_TOKEN` for authenticated
+administrative requests. Updates are applied one document at a time. If an
+update fails, rerun the inventory to see which changes are still pending.
+
+After consolidation completes, rerun the inventory and check that the proposed
+changes are empty, effective memory tags match the intended scope, and rebuilt
+observations carry the complete source tag set. In a shared project bank,
+documents and facts consistently tagged for another project appear under
+`foreignProjectDocuments` and stay outside this project's recall. The
+`projectMissing` totals include those foreign records. A document
+with conflicting tags or a conflict with the supplied ownership mapping
+requires a verified ownership decision before cutover. The apply command
+returns a nonzero status when the final audit still finds pending changes,
+unresolved records, unlinked facts, or observation tag mismatches.
+
+Run `bun scripts/scope-live.ts` to verify listing, recall, migration, and
+observations on your deployed server. It creates and deletes two temporary
+banks. The migration and verification scripts run from a repository checkout.
+[Hindsight document updates](https://hindsight.vectorize.io/developer/api/documents)
+
 ## Commands & tools
 
 | Command | What it does |
@@ -292,7 +407,8 @@ left to the reader.
 | `/mem-auto [on\|off\|recall\|retain]` | Toggle the automatic contours for this session |
 
 The agent itself gets `hindsight_recall`, `hindsight_reflect`,
-`hindsight_retain`, and — with a user bank — `hindsight_retain_user`. For
+`hindsight_retain`, and, with a user bank, `hindsight_retain_user`. Both
+retain tools accept an optional `tags` array for descriptive tags. For
 spawned agents that must stay silent, the `--mem-only-tools` CLI flag registers
 the tools and nothing else: no widget, no hooks, no automatic memory.
 
