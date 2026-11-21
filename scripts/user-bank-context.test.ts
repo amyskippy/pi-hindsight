@@ -365,7 +365,7 @@ check(
 // only place the agreement can live is a line a human reads.
 {
 	const readme = fs.readFileSync(
-		path.join(path.dirname(new URL(import.meta.url).pathname), "..", "README.md"),
+		path.join(import.meta.dir, "..", "README.md"),
 		"utf8",
 	);
 	const near = (needle: string, radius = 600): string => {

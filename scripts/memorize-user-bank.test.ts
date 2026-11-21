@@ -31,7 +31,7 @@ process.env.USERPROFILE = tmpHome;
 delete process.env.HINDSIGHT_BANK;
 delete process.env.HINDSIGHT_USER_BANK;
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = import.meta.dir;
 const memorizePath = path.join(here, "..", "src", "memorize.ts");
 
 const realMemorize = await import("../src/memorize.ts");

@@ -84,7 +84,7 @@ function makeCwd(name: string, cfg: Record<string, unknown> | null): string {
 
 function repoSrc(file: string): string {
 	return fs.readFileSync(
-		path.join(path.dirname(new URL(import.meta.url).pathname), "..", file),
+		path.join(import.meta.dir, "..", file),
 		"utf8",
 	);
 }
@@ -432,7 +432,7 @@ await withExtension(configuredCwd, async (tools) => {
 	// never built: prove first that the wiring EXISTS somewhere, then that it is
 	// deliberately absent from the automatic path.
 	const srcDir = path.join(
-		path.dirname(new URL(import.meta.url).pathname),
+		import.meta.dir,
 		"..",
 		"src",
 	);

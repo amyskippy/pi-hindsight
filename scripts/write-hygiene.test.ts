@@ -129,7 +129,7 @@ check(
 // Three files POST documents to the bank. A new one that forgets `context`
 // would silently undo this whole change, so the invariant is pinned in code
 // rather than in a comment.
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = import.meta.dir;
 for (const file of ["memorize.ts", "tools.ts", "review-docs.ts"]) {
 	const src = fs.readFileSync(path.join(here, "..", "src", file), "utf8");
 	check(

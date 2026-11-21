@@ -33,7 +33,7 @@ function check(label: string, actual: unknown, expected: unknown): void {
 const readme = fs.readFileSync(
 	new URL("../README.md", import.meta.url),
 	"utf8",
-);
+).replaceAll("\r\n", "\n");
 const start = readme.indexOf("## The recall block");
 check("the README has a recall-block section", start >= 0, true);
 const rest = readme.slice(Math.max(start, 0));
