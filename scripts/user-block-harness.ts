@@ -189,6 +189,7 @@ export function makeCwd(
 export interface WireCall {
 	url: string;
 	method: string;
+	body?: Record<string, unknown>;
 }
 
 /** Every request the extension put on the wire, newest last. */
@@ -198,6 +199,7 @@ type Mode = "ok" | "error" | "reject" | "hang";
 
 /** The stubbed server, one entry per bank the tests care about. */
 export const bank = {
+	schema: undefined as unknown,
 	user: {
 		mode: "ok" as Mode,
 		items: [] as BankItem[],
@@ -237,7 +239,7 @@ const realFetch = globalThis.fetch;
 globalThis.fetch = (async (url: any, init: any) => {
 	const target = String(url);
 	const method = init?.method ?? "GET";
-	wire.push({ url: target, method });
+	wire.push({ url: target, method, body: init?.body ? JSON.parse(init.body) : undefined });
 	if (!target.startsWith(BASE_URL))
 		throw new Error(`unstubbed request: ${method} ${target}`);
 	const side = bankInUrl(target) === USER_BANK ? bank.user : bank.project;
@@ -256,7 +258,8 @@ globalThis.fetch = (async (url: any, init: any) => {
 		});
 
 	let body: unknown = {};
-	if (target.includes("/memories/list"))
+	if (target.endsWith("/openapi.json")) body = bank.schema;
+	else if (target.includes("/memories/list"))
 		body = {
 			items: bank.user.items,
 			total: bank.user.items.length,
@@ -313,6 +316,7 @@ export interface Harness {
 	 * would be asserting against itself.
 	 */
 	callTool(name: string, params: unknown): Promise<string>;
+	command(name: string, args: string, custom?: (factory: (...args: unknown[]) => unknown) => Promise<unknown>): Promise<void>;
 	/** A turn that ended: no boundary. */
 	ordinary(): Promise<void>;
 	/** A compaction that was announced and then cancelled: no boundary. */
@@ -353,6 +357,7 @@ export function newHarness(opts: {
 	const handlers = new Map<string, Handler[]>();
 	const tools: string[] = [];
 	const toolDefs = new Map<string, ToolDef>();
+	const commands = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
 	let widget: string[] | undefined;
 	const notices: Array<{ message: string; type?: string }> = [];
 
@@ -365,7 +370,9 @@ export function newHarness(opts: {
 			tools.push(def.name);
 			toolDefs.set(def.name, def);
 		},
-		registerCommand() {},
+		registerCommand(name: string, def: { handler: (args: string, ctx: unknown) => Promise<void> }) {
+			commands.set(name, def.handler);
+		},
 		registerShortcut() {},
 		sendMessage() {},
 		appendEntry() {},
@@ -469,6 +476,11 @@ export function newHarness(opts: {
 			} finally {
 				process.chdir(prev);
 			}
+		},
+		async command(name, args, custom) {
+			const handler = commands.get(name);
+			if (!handler) throw new Error(`no such command registered: ${name}`);
+			await handler(args, custom ? { ...ctx, ui: { ...ctx.ui, custom } } : ctx);
 		},
 		async ordinary() {
 			await emit("turn_end", { type: "turn_end" });

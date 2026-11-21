@@ -40,6 +40,7 @@ remove-global: ## Unregister the published package
 check: ## Typecheck + run the self-tests
 	npx tsc --noEmit
 	bun scripts/config-merge.test.ts
+	bun scripts/memory-scope.test.ts
 	bun scripts/review-queue.test.ts
 	bun scripts/model-chain.test.ts
 	bun scripts/mem-panel.test.ts
