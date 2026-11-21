@@ -321,20 +321,30 @@ session start are optional.
 }
 ```
 
-The global policy admits the current user's memories and shared memories.
-Global writes derive `scope:shared` from the absence of any `user:` tag.
-The project policy requires the exact current `project:` tag. Scoped writes
-use the full effective tag set for observations. When present, `recallFilters`
-requires a match on at least one listed tag in addition to the bank's scope.
-The singular `recallFilter` still controls the relevance judge.
-These filters govern requests made by the extension. Configure Hindsight
-access controls separately for clients that can call the bank API directly.
+| Setting | Valid values | Behavior |
+| --- | --- | --- |
+| `memory` | JSON object with optional `global` and `project` sections, or omit | Configure the two banks independently. |
+| `memory.global` | JSON object, or omit | Policy for the optional bank selected by `userBankId`. |
+| `memory.project` | JSON object, or omit | Policy for the project bank selected by `bankId`. |
+| `memory.global.recallScope` | `"user-or-shared"`, or omit | Requires either the exact current user tag, such as `user:amy`, or `scope:shared`. Records with neither tag are excluded, including untagged records and records tagged solely for other users. |
+| `memory.project.recallScope` | `"project"`, or omit | Requires the exact current project tag, such as `project:my-app`. Records missing that tag are excluded. Other user, agent, or project tags can coexist with the required tag. |
+| `memory.global.retainTags` / `memory.project.retainTags` | Array of non-empty strings, `[]`, or omit | An explicit array replaces the legacy automatic tags for that bank. `[]` clears those automatic tags. Caller tags, provenance tags, and required scope tags still apply. |
+| `memory.global.recallFilters` / `memory.project.recallFilters` | Array of non-empty strings, `[]`, or omit | Recall requires an exact match on at least one listed tag as well as any configured scope. `[]` clears inherited filters. The singular `recallFilter` still controls the relevance judge. |
 
-Fields inherit independently for each bank. An explicit `retainTags` replaces
-the legacy tag list for its bank. An explicit empty array clears automatic tags
-or inherited filters, while required scope tags still apply. Omitted
-`retainTags` uses the scoped defaults shown above and appends legacy tags.
-Banks without a scope or filters keep their existing recall behavior.
+Fields inherit independently for each bank. Omission keeps the inherited value
+when one exists. If no layer sets `recallScope`, that bank has no user or
+project eligibility rule. Any configured `recallFilters` still apply. If no
+layer sets `retainTags`, scoped banks use the defaults shown above plus
+`retain_tags`, and banks without scope use only the legacy list for automatic
+tags. To turn off an inherited scope, remove `recallScope` from the file that
+sets it.
+
+Scoped global writes add `scope:shared` when the final tag set has no
+`user:` tags and remove it when an owner tag exists. Scoped project writes
+add the required project tag and reject conflicting project tags. Scoped
+writes use the full effective tag set for observations. These rules govern
+requests made by the extension. Configure Hindsight access controls for
+clients that can call the bank API directly.
 
 `{user}` uses the OS account, `{project}` uses the Git remote repository name
 with the repository or working directory name as a fallback, and `{agent}`
