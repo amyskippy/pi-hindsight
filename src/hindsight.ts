@@ -10,7 +10,7 @@
  *   PATCH /banks/{bank}/memories/{id}     -> curate (edit / invalidate / restore)
  *   POST /banks/{bank}/reflect            -> reflect (synthesis)
  *
- * No auth header is sent (local instance).
+ * Extension sessions use the local API. Administrative callers may supply a token.
  */
 
 import type { BankRole, Budget, HindsightConfig } from "./config.ts";
@@ -69,6 +69,18 @@ export interface MemoryRow {
 	metadata?: Record<string, unknown>;
 }
 
+export interface InventoryRow {
+	id: string;
+	tags: string[];
+	document_id?: string;
+	fact_type?: string;
+	state?: string;
+	consolidation_state?: string;
+	observation_scopes?: unknown;
+	source_memory_ids?: string[];
+	source_fact_ids?: string[];
+}
+
 /** Bank size counters shown in the status widget. */
 export interface BankStats {
 	/** Stored documents (total_documents). */
@@ -96,6 +108,7 @@ export class HindsightClient {
 	constructor(
 		private readonly cfg: HindsightConfig,
 		private readonly role: BankRole = "project",
+		private readonly apiToken?: string,
 	) {
 		this.bankId = role === "global" ? cfg.userBankId : cfg.bankId;
 	}
@@ -162,7 +175,11 @@ export class HindsightClient {
 			});
 			const res = await fetch(url, {
 				method,
-				headers: body ? { "content-type": "application/json" } : undefined,
+				headers: {
+					...(body ? { "content-type": "application/json" } : {}),
+					...(this.apiToken ? { authorization: `Bearer ${this.apiToken}` } : {}),
+				},
+				redirect: this.apiToken ? "error" : undefined,
 				body: body === undefined ? undefined : JSON.stringify(body),
 				signal: controller.signal,
 			});
@@ -250,6 +267,47 @@ export class HindsightClient {
 			timeoutMs,
 		)) as { items?: MemoryRow[] } | undefined;
 		return Array.isArray(res?.items) ? res.items : [];
+	}
+
+	/** Unfiltered administrative inventory, independent of prompt and recall policy. */
+	async inventory(resource: "documents" | "memories/list"): Promise<InventoryRow[]> {
+		const rows: InventoryRow[] = [];
+		const ids = new Set<string>();
+		const limit = 100;
+		let total: number | undefined;
+		do {
+			const page = await this.request<{ items: InventoryRow[]; total: number }>(
+				"GET", `${this.bankBase()}/${resource}?limit=${limit}&offset=${rows.length}`,
+			);
+			total ??= page.total;
+			if (!Array.isArray(page.items) || !Number.isSafeInteger(total) ||
+				page.total !== total || (!page.items.length && rows.length < total))
+				throw new Error(`Incomplete ${resource} inventory; pause writers and retry`);
+			for (const row of page.items) {
+				if (!row.id || ids.has(row.id) || !Array.isArray(row.tags) ||
+					row.tags.some(tag => typeof tag !== "string"))
+					throw new Error(`Invalid or changing ${resource} inventory`);
+				ids.add(row.id);
+				rows.push(row);
+			}
+		} while (rows.length < total);
+		if (rows.length !== total) throw new Error(`Changing ${resource} inventory`);
+		return rows;
+	}
+
+	async inventoryDetail(resource: "documents" | "memories", id: string): Promise<InventoryRow> {
+		return this.request("GET", `${this.bankBase()}/${resource}/${encodeURIComponent(id)}`);
+	}
+
+	async updateDocumentTags(
+		id: string,
+		update: { tags?: string[]; add_tags?: string[]; remove_tags?: string[]; observation_scopes?: "combined" },
+	): Promise<void> {
+		await this.requireFields("Document migration", "/documents/{document_id}", "patch", Object.keys(update));
+		const result = await this.request<{ success?: boolean }>(
+			"PATCH", `${this.bankBase()}/documents/${encodeURIComponent(id)}`, update,
+		);
+		if (!result?.success) throw new Error(`Document update failed for ${id}`);
 	}
 
 	/** GET /v1/{ns}/banks */
