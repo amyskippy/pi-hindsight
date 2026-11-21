@@ -13,8 +13,17 @@
  * No auth header is sent (local instance).
  */
 
-import type { Budget, HindsightConfig } from "./config.ts";
+import type { BankRole, Budget, HindsightConfig } from "./config.ts";
 import { appendDebug } from "./log.ts";
+import {
+	flatListTags,
+	MemoryScopeError,
+	normalizeGlobalTags,
+	recallTags,
+	retainSnapshot,
+	scopeMode,
+	type RetainSnapshot,
+} from "./memory-scope.ts";
 
 export interface RetainOptions {
 	context?: string;
@@ -80,10 +89,53 @@ export class HindsightError extends Error {
 }
 
 export class HindsightClient {
-	constructor(private readonly cfg: HindsightConfig) {}
+	private readonly bankId: string;
+	private schema?: ApiSchema;
+	private schemaRequest?: Promise<ApiSchema>;
+
+	constructor(
+		private readonly cfg: HindsightConfig,
+		private readonly role: BankRole = "project",
+	) {
+		this.bankId = role === "global" ? cfg.userBankId : cfg.bankId;
+	}
 
 	private bankBase(): string {
-		return `${this.cfg.baseUrl}/v1/${this.cfg.namespace}/banks/${encodeURIComponent(this.cfg.bankId)}`;
+		return `${this.cfg.baseUrl}/v1/${encodeURIComponent(this.cfg.namespace)}/banks/${encodeURIComponent(this.bankId)}`;
+	}
+
+	private async apiSchema(): Promise<ApiSchema> {
+		if (this.schema) return this.schema;
+		this.schemaRequest ??= this.request<ApiSchema>(
+			"GET", `${this.cfg.baseUrl}/openapi.json`, undefined, undefined, 5000,
+		).then(schema => {
+			if (!schema?.paths) throw new Error("OpenAPI paths unavailable");
+			this.schema = schema;
+			return schema;
+		}).finally(() => { this.schemaRequest = undefined; });
+		return this.schemaRequest;
+	}
+
+	private async requireFields(
+		action: string,
+		suffix: string,
+		method: "get" | "post" | "patch",
+		fields: string[],
+		item = false,
+	): Promise<void> {
+		try {
+			const schema = await this.apiSchema();
+			const route = (ns: string) => schema.paths[`/v1/${ns}/banks/{bank_id}${suffix}`];
+			const operation = (route(this.cfg.namespace) ?? route("{namespace}") ?? route("default"))?.[method];
+			const body = apiProperties(schema, operation?.requestBody?.content?.["application/json"]?.schema);
+			const available = method === "get"
+				? operation?.parameters?.map(param => param.name) ?? []
+				: Object.keys(item ? apiProperties(schema, body.items?.items) : body);
+			if (fields.every(field => available.includes(field))) return;
+		} catch (err) {
+			throw new MemoryScopeError(`${action} unavailable: could not verify Hindsight capabilities (${(err as Error).message})`);
+		}
+		throw new MemoryScopeError(`${action} unavailable: Hindsight does not advertise ${fields.join(", ")}`);
 	}
 
 	private async request<T>(
@@ -99,6 +151,7 @@ export class HindsightClient {
 		// caller signal (hook/command) would otherwise accumulate one listener per
 		// request until it eventually aborts.
 		const onAbort = () => controller.abort();
+		if (signal?.aborted) controller.abort();
 		if (signal) signal.addEventListener("abort", onAbort, { once: true });
 		try {
 			appendDebug(process.cwd(), "http.start", {
@@ -182,9 +235,16 @@ export class HindsightClient {
 		signal?: AbortSignal,
 		timeoutMs?: number,
 	): Promise<MemoryRow[]> {
+		const predicate = flatListTags(recallTags(this.cfg, this.role));
+		const params = new URLSearchParams({ limit: String(limit) });
+		if (predicate.tags_match) {
+			await this.requireFields("Scoped memory listing", "/memories/list", "get", ["tags", "tags_match"]);
+			for (const tag of predicate.tags ?? []) params.append("tags", tag);
+			params.set("tags_match", predicate.tags_match);
+		}
 		const res = (await this.request(
 			"GET",
-			`${this.bankBase()}/memories/list?limit=${encodeURIComponent(String(limit))}`,
+			`${this.bankBase()}/memories/list?${params}`,
 			undefined,
 			signal,
 			timeoutMs,
@@ -207,7 +267,7 @@ export class HindsightClient {
 		return this.request(
 			"PUT",
 			this.bankBase(),
-			{ name: name ?? this.cfg.bankId },
+			{ name: name ?? this.bankId },
 			signal,
 		);
 	}
@@ -242,13 +302,31 @@ export class HindsightClient {
 		opts: RetainOptions = {},
 		signal?: AbortSignal,
 	): Promise<unknown> {
-		const configuredTags = this.cfg.retain_tags;
+		return this.retainResolved(content, opts, retainSnapshot(this.cfg, this.role, opts.tags), signal);
+	}
+
+	async retainResolved(
+		content: string,
+		opts: Omit<RetainOptions, "tags">,
+		snapshot: RetainSnapshot,
+		signal?: AbortSignal,
+		timeoutMs = 30000,
+	): Promise<unknown> {
+		const configured = scopeMode(this.cfg, this.role);
+		const scope = snapshot.scope;
+		if ((configured && scope !== configured) ||
+			(scope && (scope === "project") !== (this.role === "project")))
+			throw new MemoryScopeError("Retain snapshot does not match the bank scope");
+		const tags = scope === "user-or-shared" ? normalizeGlobalTags(snapshot.tags ?? []) : snapshot.tags;
+		if (scope === "project" && tags?.filter(tag => tag.startsWith("project:")).length !== 1)
+			throw new MemoryScopeError("Project retain snapshot requires exactly one project tag");
+		if (scope)
+			await this.requireFields("Scoped retention", "/memories", "post", ["tags", "observation_scopes"], true);
 		const item = {
 			content,
 			context: opts.context,
-			tags: configuredTags?.length
-				? [...new Set([...(opts.tags ?? []), ...configuredTags])]
-				: opts.tags,
+			tags,
+			observation_scopes: scope ? "combined" : undefined,
 			metadata: opts.metadata,
 			timestamp: new Date().toISOString(),
 			document_id: opts.documentId,
@@ -258,7 +336,7 @@ export class HindsightClient {
 			`${this.bankBase()}/memories`,
 			{ items: [item], async: opts.async ?? false },
 			signal,
-			30000,
+			timeoutMs,
 		);
 	}
 
@@ -361,6 +439,9 @@ export class HindsightClient {
 	 * their own, much shorter, abort ceiling.
 	 */
 	async reflect(query: string, signal?: AbortSignal): Promise<unknown> {
+		const predicate = recallTags(this.cfg, this.role);
+		if ("tag_groups" in predicate || predicate.tags_match)
+			throw new MemoryScopeError("Scoped synthesis is unavailable: Hindsight Reflect can include untagged directives and stored models with unverified sources");
 		return this.request(
 			"POST",
 			`${this.bankBase()}/reflect`,
@@ -376,20 +457,33 @@ export class HindsightClient {
 		opts: RecallOptions = {},
 		signal?: AbortSignal,
 	): Promise<unknown> {
-		return this.request(
-			"POST",
-			`${this.bankBase()}/memories/recall`,
-			{
-				query,
-				max_tokens: opts.maxTokens ?? this.cfg.recallMaxTokens,
-				budget: opts.budget ?? this.cfg.recallBudget,
-				tags: opts.tags,
-				types: opts.types,
-				prefer_observations: opts.preferObservations ?? true,
-			},
-			signal,
-			30000,
-		);
+		const predicate = recallTags(this.cfg, this.role, opts.tags);
+		const compound = "tag_groups" in predicate;
+		if (compound)
+			await this.requireFields("Scoped recall", "/memories/recall", "post", ["tag_groups"]);
+		else if (predicate.tags_match)
+			await this.requireFields("Scoped recall", "/memories/recall", "post", ["tags", "tags_match"]);
+		try {
+			return await this.request(
+				"POST",
+				`${this.bankBase()}/memories/recall`,
+				{
+					query,
+					max_tokens: opts.maxTokens ?? this.cfg.recallMaxTokens,
+					budget: opts.budget ?? this.cfg.recallBudget,
+					...predicate,
+					types: opts.types,
+					prefer_observations: opts.preferObservations ?? true,
+				},
+				signal,
+				30000,
+			);
+		} catch (err) {
+			if ((compound || predicate.tags_match) && err instanceof HindsightError &&
+				(err.status === 400 || err.status === 422))
+				throw new MemoryScopeError(`Hindsight rejected scoped recall (HTTP ${err.status})`);
+			throw err;
+		}
 	}
 
 	/** GET /v1/{ns}/banks/{bank}/mental-models/{id} — a stored reflect answer. */
@@ -398,6 +492,9 @@ export class HindsightClient {
 		signal?: AbortSignal,
 		timeoutMs?: number,
 	): Promise<unknown> {
+		const predicate = recallTags(this.cfg, this.role);
+		if ("tag_groups" in predicate || predicate.tags_match)
+			throw new MemoryScopeError("Scoped mental model unavailable: its stored content has no verified generation policy");
 		return this.request(
 			"GET",
 			`${this.bankBase()}/mental-models/${encodeURIComponent(id)}`,
@@ -406,4 +503,27 @@ export class HindsightClient {
 			timeoutMs,
 		);
 	}
+}
+
+interface ApiField {
+	$ref?: string;
+	properties?: Record<string, ApiField>;
+	items?: ApiField;
+}
+
+interface ApiOperation {
+	parameters?: { name: string }[];
+	requestBody?: { content?: Record<string, { schema?: ApiField }> };
+}
+
+interface ApiSchema {
+	paths: Record<string, Partial<Record<"get" | "post" | "patch", ApiOperation>>>;
+	components?: { schemas?: Record<string, ApiField> };
+}
+
+function apiProperties(api: ApiSchema, field: ApiField | undefined): Record<string, ApiField> {
+	const prefix = "#/components/schemas/";
+	if (field?.$ref?.startsWith(prefix))
+		return api.components?.schemas?.[field.$ref.slice(prefix.length)]?.properties ?? {};
+	return field?.properties ?? {};
 }

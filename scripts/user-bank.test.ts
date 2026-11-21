@@ -467,7 +467,7 @@ await withExtension(configuredCwd, async (tools) => {
 	);
 	check(
 		"Guard against a future regression: every memorize write goes through the single injected client",
-		[...memorizeSrc.matchAll(/(\S+)\.retain\(/g)].map((m) => m[1]),
+		[...memorizeSrc.matchAll(/(\S+)\.retain(?:Resolved)?\(/g)].map((m) => m[1]),
 		["this.deps.client"],
 	);
 
@@ -494,7 +494,6 @@ await withExtension(configuredCwd, async (tools) => {
 		"src/commands.ts",
 		"src/mem-panel.ts",
 		"src/ui.ts",
-		"src/review-docs.ts",
 		"src/review-queue.ts",
 		"src/task-detector.ts",
 		"src/transcript.ts",

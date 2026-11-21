@@ -30,6 +30,7 @@ import type {
 import type { HindsightConfig } from "./config.ts";
 import type { HindsightClient } from "./hindsight.ts";
 import { appendDebug, appendLog } from "./log.ts";
+import { MemoryScopeError, retainSnapshot, type RetainSnapshot } from "./memory-scope.ts";
 import { type ModelChain, resolveChain, runModel } from "./model.ts";
 import {
 	buildDedupPrompt,
@@ -253,6 +254,7 @@ function enqueueReview(
 	cfg: HindsightConfig,
 	docId: string,
 	reason: string,
+	snapshot: RetainSnapshot,
 ): void {
 	try {
 		enqueueAdd({
@@ -262,7 +264,7 @@ function enqueueReview(
 			namespace: cfg.namespace,
 			project: cwd,
 			reason,
-			retainTags: cfg.retain_tags,
+			retainSnapshot: snapshot,
 		});
 	} catch (err) {
 		appendDebug(cwd, "memorize.review.enqueue_error", {
@@ -513,7 +515,7 @@ export class Memorizer {
 				reason,
 				chunks: chunks.length,
 			});
-			await this.runInline(ctx, chain, chunks, deltaText, docId, sessionId);
+			const snapshot = await this.runInline(ctx, chain, chunks, deltaText, docId, sessionId);
 			if (lastId) {
 				const saved = saveState(pi, {
 					watermark: lastId,
@@ -529,7 +531,7 @@ export class Memorizer {
 					reason,
 				});
 				// Also enqueue the stored document into the GLOBAL review queue.
-				enqueueReview(cwd, cfg, docId, reason);
+				if (snapshot) enqueueReview(cwd, cfg, docId, reason, snapshot);
 				if (!saved)
 					appendDebug(cwd, "memorize.watermark.stale", { reason, lastId });
 			}
@@ -566,7 +568,7 @@ export class Memorizer {
 		deltaText: string,
 		docId: string,
 		sessionId: string,
-	): Promise<"done" | "blocked"> {
+	): Promise<RetainSnapshot | undefined> {
 		const { cfg } = this.deps;
 		const cwd = ctx.cwd ?? process.cwd();
 
@@ -599,7 +601,7 @@ export class Memorizer {
 				lines: 0,
 			});
 			this.notify(ctx, "memory skipped: extractor found no reusable facts");
-			return "blocked";
+			return undefined;
 		}
 
 		const prior = readPriorSummary(cwd, cfg.priorSummaryPath);
@@ -646,7 +648,7 @@ export class Memorizer {
 				lines: 0,
 			});
 			this.notify(ctx, "memory skipped: no new reusable facts after merge");
-			return "blocked";
+			return undefined;
 		}
 
 		// verify: only when the delta fits one window (else trust distil+merge).
@@ -700,7 +702,7 @@ export class Memorizer {
 				ctx,
 				"memory skipped: note was assistant chatter, not reusable memory",
 			);
-			return "blocked";
+			return undefined;
 		}
 
 		// Cross-document dedup against the bank. This is the ONE thing document_id
@@ -763,6 +765,7 @@ export class Memorizer {
 						ctx.signal,
 					);
 				} catch (err) {
+					if (err instanceof MemoryScopeError) throw err;
 					appendDebug(cwd, "memorize.dedup.query_error", {
 						error: (err as Error).message,
 					});
@@ -819,11 +822,13 @@ export class Memorizer {
 						ctx,
 						`memory skipped: everything already in the bank${retiredSuffix(invalidated)}`,
 					);
-					return "blocked";
+					return undefined;
 				}
 				note = deduped;
 			}
 		} catch (err) {
+			if (err instanceof MemoryScopeError)
+				ctx.ui?.notify?.(`pi-hindsight duplicate and invalidation lookup: ${err.message}`, "warning");
 			// Never lose data because dedup flaked: keep the pre-dedup note.
 			appendDebug(cwd, "memorize.dedup.error", {
 				error: (err as Error).message,
@@ -844,8 +849,8 @@ export class Memorizer {
 			language: cfg.memoryLanguage,
 			session: sessionId,
 		};
-		await this.deps.client.retain(note, {
-			tags: [cfg.bankId, "agent-summary"],
+		const snapshot = retainSnapshot(cfg, "project", [cfg.bankId, "agent-summary"]);
+		await this.deps.client.retainResolved(note, {
 			// Stable id → re-ingesting the same window upserts instead of duplicating.
 			documentId: docId,
 			// Both go into the server's extraction prompt; see retain-hygiene.ts for
@@ -853,7 +858,7 @@ export class Memorizer {
 			context: retainContext("session-note", provenance),
 			metadata: retainMetadata("session-note", provenance),
 			async: true,
-		});
+		}, snapshot);
 		appendDebug(cwd, "memorize.retain.done", {
 			bankId: cfg.bankId,
 			async: true,
@@ -906,7 +911,7 @@ export class Memorizer {
 			});
 			/* counts are best-effort */
 		}
-		return "done";
+		return snapshot;
 	}
 
 	/**

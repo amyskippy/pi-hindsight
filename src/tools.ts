@@ -32,6 +32,9 @@ const RetainParams = Type.Object({
 				"fact = static truth; decision = choice+rationale; knowhow = procedure/steps; pitfall = what did NOT work.",
 		}),
 	),
+	tags: Type.Optional(Type.Array(Type.String({ minLength: 1 }), {
+		description: "Additional descriptive tags to store with the memory.",
+	})),
 });
 
 const RecallParams = Type.Object({
@@ -60,11 +63,7 @@ function fail(text: string) {
 export function registerTools(
 	pi: ExtensionAPI,
 	getState: () => { cfg: HindsightConfig; client: HindsightClient } | undefined,
-	// The user bank arrives as a resolved client, not as a lookup: it is reachable
-	// from exactly this one closure, which is what keeps every automatic write path
-	// structurally unable to address it. Undefined when no user bank is declared,
-	// and then the tool below does not exist at all.
-	userBank?: { cfg: HindsightConfig; client: HindsightClient },
+	getUserBank?: () => { cfg: HindsightConfig; client: HindsightClient } | undefined,
 	// Raised after a SUCCESSFUL user-bank write, so the caller can tell the user
 	// that whatever it froze into the system prompt no longer matches the bank.
 	// Notification only: acting on it inside the turn would rewrite the cached
@@ -100,7 +99,7 @@ export function registerTools(
 				await s.client.retain(
 					params.content,
 					{
-						tags: [s.cfg.bankId, "agent-manual", kind],
+						tags: [s.cfg.bankId, "agent-manual", kind, ...(params.tags ?? [])],
 						// This path used to send bare content. It is also the path the
 						// agent writes in whatever language the CONVERSATION is in, which
 						// is how a single-language bank ended up bilingual — the language
@@ -121,7 +120,7 @@ export function registerTools(
 		},
 	});
 
-	if (userBank) {
+	if (getUserBank?.()) {
 		pi.registerTool({
 			name: "hindsight_retain_user",
 			label: "Retain (user)",
@@ -134,6 +133,8 @@ export function registerTools(
 			],
 			parameters: RetainParams,
 			async execute(_id, params, signal) {
+				const userBank = getUserBank();
+				if (!userBank) return fail("User memory bank is unavailable");
 				const kind = params.kind ?? "fact";
 				const cwd = process.cwd();
 				try {
@@ -145,7 +146,7 @@ export function registerTools(
 					await userBank.client.retain(
 						params.content,
 						{
-							tags: [userBank.cfg.userBankId, "user-manual", kind],
+							tags: [userBank.cfg.userBankId, "user-manual", kind, ...(params.tags ?? [])],
 							context: userRetainContext(provenance),
 							metadata: userRetainMetadata(provenance),
 						},

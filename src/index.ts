@@ -9,6 +9,7 @@ import { registerCommands } from "./commands.ts";
 import { HindsightClient } from "./hindsight.ts";
 import { appendDebug, appendLog, setDebugEnabled } from "./log.ts";
 import { Memorizer } from "./memorize.ts";
+import { bankScope, MemoryScopeError } from "./memory-scope.ts";
 import { resolveChain } from "./model.ts";
 import { recallForTurn, type RecallInjectResult } from "./recall.ts";
 import { DEEP_HEADER, FACTS_END, FACTS_HEADER } from "./recall-utils.ts";
@@ -162,8 +163,10 @@ export default function (pi: ExtensionAPI) {
 	// sees it, which is why the automatic write path cannot address the user bank.
 	const userBankOf = (c: HindsightConfig | undefined) =>
 		c?.userBankId
-			? { cfg: c, client: new HindsightClient({ ...c, bankId: c.userBankId }) }
+			? { cfg: c, client: new HindsightClient(c, "global") }
 			: undefined;
+	let userBank: ReturnType<typeof userBankOf>;
+	const getUserBank = () => userBank;
 
 	// Mode guard: when pi opens THIS plugin's own dev checkout, the project's
 	// local `.pi/extensions/hindsight.ts` loads the working-tree source. If the
@@ -198,12 +201,13 @@ export default function (pi: ExtensionAPI) {
 	if (onlyToolsRequested() || isEphemeralSubagent()) {
 		try {
 			cfg = loadConfig(process.cwd());
-			client = new HindsightClient(cfg);
+			client = new HindsightClient(cfg, "project");
+			userBank = userBankOf(cfg);
 			setDebugEnabled(cfg.debug);
 		} catch {
 			/* getState stays undefined; tools then report "not initialized" */
 		}
-		registerTools(pi, getState, userBankOf(cfg));
+		registerTools(pi, getState, getUserBank);
 		return;
 	}
 
@@ -267,6 +271,8 @@ export default function (pi: ExtensionAPI) {
 	// as this extension instance, so `/reload` correctly starts a fresh one.
 	let userBlock: string | undefined;
 	let userBlockFacts = 0;
+	let userBlockPolicy: string | undefined;
+	let userEpoch = 0;
 	// Raised by a write to the user bank inside the epoch: the frozen block and the
 	// bank have diverged. It changes nothing in the prompt — swapping the block in
 	// now is exactly the mid-epoch rewrite this design exists to avoid — but the
@@ -386,9 +392,8 @@ export default function (pi: ExtensionAPI) {
 	/**
 	 * Open an epoch: read the user bank once and freeze what it yields.
 	 *
-	 * A failed, timed-out or erroring read assigns NOTHING, so the previous epoch's
-	 * block simply stays in force; when there is no previous block, the state stays
-	 * "no block" and the prompt is left untouched, marker and all.
+	 * Transient read failures may reuse the previous block for the same policy.
+	 * An invalid memory policy clears the block.
 	 */
 	const openUserEpoch = async (
 		cwd: string,
@@ -399,7 +404,19 @@ export default function (pi: ExtensionAPI) {
 		// previous block stays in force but this session may now carry the marker.
 		epochDecided = false;
 		if (standDown) return;
-		const ub = userBankOf(cfg);
+		const epoch = ++userEpoch;
+		const ub = userBank;
+		const policy = ub ? JSON.stringify([
+			ub.cfg.baseUrl, ub.cfg.namespace, ub.cfg.userBankId, ub.cfg.bankId,
+			ub.cfg.identity, ub.cfg.memory,
+		]) : undefined;
+		if (policy !== userBlockPolicy) {
+			userBlockPolicy = policy;
+			userBlock = undefined;
+			userBlockFacts = 0;
+			userBlockStale = false;
+			userBlockWarned = false;
+		}
 		if (!ub) return; // no user bank declared: no request, no widget, no injection
 		const ask = markerAsk(cwd);
 		if (ask.kind === "none") {
@@ -425,7 +442,7 @@ export default function (pi: ExtensionAPI) {
 						USER_BLOCK_CEILING_MS,
 					),
 				);
-				if (!block)
+				if (!block && epoch === userEpoch)
 					warnUser(ui, `mental model "${spec.model}" has no content yet`);
 			} else if (spec.query) {
 				block = buildUserBlock(
@@ -441,6 +458,7 @@ export default function (pi: ExtensionAPI) {
 					),
 				);
 			}
+			if (epoch !== userEpoch) return;
 			userBlock = block?.text;
 			userBlockFacts = block?.facts ?? 0;
 			userBlockStale = false; // the frozen block and the bank agree again
@@ -452,26 +470,31 @@ export default function (pi: ExtensionAPI) {
 				chars: userBlock?.length ?? 0,
 			});
 		} catch (err) {
-			// Nothing is assigned, so a block from an earlier boundary of THIS session
-			// stays in force — a stale answer beats an empty one, and the widget says
-			// it is stale. A fresh process has no such cache, and then the marker is
-			// simply blanked and the person told once.
+			if (epoch !== userEpoch) return;
+			if (err instanceof MemoryScopeError) {
+				userBlock = undefined;
+				userBlockFacts = 0;
+				userBlockStale = false;
+			}
+			// A transient read failure can reuse the preceding block for this policy.
+			// A scope failure leaves the marker blank and warns the user.
 			appendDebug(cwd, "userblock.epoch.error", {
 				reason,
 				error: (err as Error).message,
 				kept: userBlockFacts,
 			});
-			if (userBlock) userBlockStale = true;
+			if (err instanceof MemoryScopeError) warnUser(ui, err.message);
+			else if (userBlock) userBlockStale = true;
 			else
 				warnUser(
 					ui,
-					`bank "${cfg?.userBankId}" did not answer (${(err as Error).message})`,
+					`bank "${ub.cfg.userBankId}" did not answer (${(err as Error).message})`,
 				);
 		}
 	};
 
 	const onUserBankWrite = () => {
-		if (standDown || !cfg?.userBankId) return;
+		if (standDown || !userBank) return;
 		userBlockStale = true;
 		status.userBlock({
 			injected: !!userBlock,
@@ -528,7 +551,8 @@ export default function (pi: ExtensionAPI) {
 
 	const init = (cwd: string) => {
 		cfg = loadConfig(cwd);
-		client = new HindsightClient(cfg);
+		client = new HindsightClient(cfg, "project");
+		userBank = userBankOf(cfg);
 		setDebugEnabled(cfg.debug);
 		// Retire the previous Memorizer before creating a new one.
 		memorizer?.dispose();
@@ -564,7 +588,8 @@ export default function (pi: ExtensionAPI) {
 	} catch {
 		/* no config readable here; the user tool simply is not offered */
 	}
-	registerTools(pi, getState, userBankOf(loadCfg), onUserBankWrite);
+	userBank = userBankOf(loadCfg);
+	registerTools(pi, getState, getUserBank, onUserBankWrite);
 	registerCommands(pi, getState, () => memorizer, status, runtime);
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -577,7 +602,8 @@ export default function (pi: ExtensionAPI) {
 			// (agents may read memory deliberately via hindsight_recall).
 			try {
 				cfg = loadConfig(ctx.cwd ?? process.cwd());
-				client = new HindsightClient(cfg);
+				client = new HindsightClient(cfg, "project");
+				userBank = userBankOf(cfg);
 				setDebugEnabled(cfg.debug);
 			} catch {
 				/* getState stays undefined; tools then report "not initialized" */
@@ -686,11 +712,22 @@ export default function (pi: ExtensionAPI) {
 	// occurs would swap the block in the middle of a live epoch.
 	pi.on("session_compact", async (event, ctx) => {
 		if (standDown) return;
-		await openUserEpoch(
-			ctx.cwd ?? process.cwd(),
-			`compact:${event.reason}`,
-			ctx.ui,
-		);
+		const cwd = ctx.cwd ?? process.cwd();
+		const latest = loadConfig(cwd);
+		const reason = `compact:${event.reason}`;
+		// The project client remains tied to the session. Check the global bank
+		// against that active project bank as well as newly configured policy.
+		userBank = userBankOf({ ...latest, bankId: cfg?.bankId ?? latest.bankId });
+		if (cfg && userBank?.cfg.userBankId === cfg.bankId) {
+			// Preserve the active project client's guard during a global-only refresh.
+			try {
+				bankScope({ ...cfg, userBankId: latest.userBankId }, "project");
+			} catch (err) {
+				if (!(err instanceof MemoryScopeError)) throw err;
+				userBank = userBankOf({ ...userBank.cfg, memory: cfg.memory });
+			}
+		}
+		await openUserEpoch(cwd, reason, ctx.ui);
 	});
 
 	// Inject the frozen user block into the system prompt.
@@ -704,7 +741,7 @@ export default function (pi: ExtensionAPI) {
 	// model chain resolves — and none of those should decide whether the person's
 	// standing facts are in the prompt.
 	pi.on("before_agent_start", async (event, _ctx) => {
-		if (standDown || !cfg?.userBankId) return;
+		if (standDown || !userBank) return;
 		// Remembered for the NEXT boundary, never acted on here: reading the bank
 		// now is the mid-epoch prompt rewrite this whole design exists to avoid. The
 		// spec is kept, not just the fact that a marker exists, so a marker reaching
@@ -831,6 +868,8 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 		} catch (err) {
+			if (err instanceof MemoryScopeError)
+				ctx.ui?.notify?.(`pi-hindsight recall: ${err.message}`, "warning");
 			appendDebug(cwd, "event.before_agent_start.error", {
 				error: (err as Error).message,
 				aborted: ac.signal.aborted,

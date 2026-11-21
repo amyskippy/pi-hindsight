@@ -4,6 +4,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { HindsightConfig, RecallEffort } from "./config.ts";
 import type { HindsightClient } from "./hindsight.ts";
 import { appendDebug } from "./log.ts";
+import { MemoryScopeError } from "./memory-scope.ts";
 import { type ModelChain, runModel } from "./model.ts";
 import { DEEP_SYNTHESIS, QUERY_BUILDER, RECALL_JUDGE } from "./prompts.ts";
 import type { Boundary } from "./reminder.ts";
@@ -156,6 +157,7 @@ async function runOneQuery(
 	try {
 		hits = await bankHits(client, query, cfg, signal);
 	} catch (err) {
+		if (err instanceof MemoryScopeError) throw err;
 		appendDebug(cwd, "recall.bank.error", {
 			query,
 			error: (err as Error).message,

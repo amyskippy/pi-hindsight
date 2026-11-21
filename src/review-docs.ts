@@ -13,11 +13,9 @@
  */
 
 import * as path from "node:path";
-import {
-	configuredRetainTags,
-	readGlobalOverrides,
-	readProjectOverrides,
-} from "./config.ts";
+import { loadConfig } from "./config.ts";
+import { HindsightClient } from "./hindsight.ts";
+import { bankScope, retainSnapshot, type RetainSnapshot } from "./memory-scope.ts";
 import {
 	type PendingDoc,
 	loadPending,
@@ -47,14 +45,18 @@ export interface ReviewDoc {
 	 */
 	language: string;
 	retainTags?: string[];
+	retainSnapshot?: RetainSnapshot;
+	documentTags?: string[];
 	/** True when the bank could not be reached for this entry. */
 	unreachable: boolean;
 }
 
 /** Accept only localhost bank URLs recorded in the queue (anti-SSRF guard). */
 function safeBaseUrl(u: string): string | undefined {
-	if (u.startsWith("http://localhost") || u.startsWith("http://127.0.0.1"))
-		return u.replace(/\/+$/, "");
+	const url = URL.parse(u);
+	if (url?.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname) &&
+		!url.username && !url.password && !url.search && !url.hash)
+		return url.href.replace(/\/+$/, "");
 	return undefined;
 }
 
@@ -109,6 +111,7 @@ async function hydrate(p: PendingDoc): Promise<ReviewDoc | undefined> {
 		// config rather than to the reviewing session's.
 		language: p.language || projectLanguage(p.project),
 		retainTags: p.retainTags,
+		retainSnapshot: p.retainSnapshot,
 		unreachable: false,
 	};
 	// Network/timeout: keep it pending but flag it, so the user is not silently
@@ -127,6 +130,8 @@ async function hydrate(p: PendingDoc): Promise<ReviewDoc | undefined> {
 	}
 	return {
 		...shell,
+		documentTags: Array.isArray(doc.tags) && doc.tags.every(tag => typeof tag === "string")
+			? doc.tags : undefined,
 		text: typeof doc.original_text === "string" ? doc.original_text : "",
 		createdAt: typeof doc.created_at === "string" ? doc.created_at : "",
 		factCount:
@@ -175,29 +180,36 @@ export async function editDoc(
 		project: path.basename(doc.project) || doc.bank,
 		language,
 	};
-	const configuredTags =
-		doc.retainTags ??
-		configuredRetainTags(
-			readGlobalOverrides(),
-			doc.project ? readProjectOverrides(doc.project) : {},
-			doc.bank,
-		);
-	const item = {
-		content: text,
-		document_id: doc.docId,
-		tags: [...new Set([doc.bank, "agent-summary", ...configuredTags])],
+	const baseUrl = safeBaseUrl(doc.baseUrl);
+	if (!baseUrl || !DOC_ID_RE.test(doc.docId)) throw new Error("Invalid review document coordinates");
+	// Historical queue entries come from automatic project retention. Only an
+	// explicit snapshot can establish that an entry was originally global.
+	const role = doc.retainSnapshot?.scope === "user-or-shared" ? "global" : "project";
+	const config = role === "global"
+		? { ...loadConfig(doc.project), userBankId: doc.bank }
+		: loadConfig(doc.project, doc.bank);
+	const cfg = { ...config, baseUrl, namespace: doc.namespace };
+	const client = new HindsightClient(cfg, role);
+	let snapshot = doc.retainSnapshot;
+	if (!snapshot?.scope) {
+		const provenanceTags = [doc.bank, role === "global" ? "user-manual" : "agent-summary"];
+		const original = snapshot?.tags ?? doc.documentTags ??
+			(doc.retainTags ? [...provenanceTags, ...doc.retainTags] : undefined);
+		const scope = bankScope(cfg, role);
+		if (original && scope && role === "project") {
+			const projects = [...new Set(original.filter(tag => tag.startsWith("project:")))];
+			if (projects.length > 1) throw new Error("Review document has conflicting project tags");
+			snapshot = { tags: [...new Set([...original, projects[0] ?? scope.tags[0]!])], scope: "project" };
+		} else if (original) {
+			snapshot = { tags: [...new Set(original)], scope: scope ? "user-or-shared" : undefined };
+		} else {
+			snapshot = retainSnapshot(cfg, role, provenanceTags);
+		}
+	}
+	await client.retainResolved(text, {
+		documentId: doc.docId,
 		context: retainContext("user-edit", provenance),
 		metadata: retainMetadata("user-edit", provenance),
-		timestamp: new Date().toISOString(),
-	};
-	const res = await fetchWithTimeout(
-		`${bankBase(doc)}/memories`,
-		{
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ items: [item], async: true }),
-		},
-		10_000,
-	);
-	if (!res || !res.ok) throw new Error(`bank ${res?.status ?? "unreachable"}`);
+		async: true,
+	}, snapshot, undefined, 10_000);
 }

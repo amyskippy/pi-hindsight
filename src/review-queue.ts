@@ -22,6 +22,7 @@ import {
 	parseRetainTags,
 	readProjectOverrides,
 } from "./config.ts";
+import type { RetainSnapshot } from "./memory-scope.ts";
 
 /** An "add" event: a document was stored and now awaits review. */
 export interface AddEvent {
@@ -42,6 +43,7 @@ export interface AddEvent {
 	language?: string;
 	/** Configured tags sent with the original note, for later review edits. */
 	retainTags?: string[];
+	retainSnapshot?: RetainSnapshot;
 }
 
 /**
@@ -87,6 +89,7 @@ export interface PendingDoc {
 	/** Language of the ORIGIN project's bank; "" for entries written before 0.4.1. */
 	language: string;
 	retainTags?: string[];
+	retainSnapshot?: RetainSnapshot;
 }
 
 /** Fields the caller supplies for an add; ts/ev are filled in here. */
@@ -122,6 +125,7 @@ export function foldEvents(lines: Iterable<string>): PendingDoc[] {
 		const docId = rec.docId;
 		const str = (v: unknown): string => (typeof v === "string" ? v : "");
 		if (rec.ev === "add") {
+			const snapshot = rec.retainSnapshot as RetainSnapshot | undefined;
 			pending.set(docId, {
 				docId,
 				bank: str(rec.bank),
@@ -134,6 +138,11 @@ export function foldEvents(lines: Iterable<string>): PendingDoc[] {
 				retainTags: Array.isArray(rec.retainTags)
 					? parseRetainTags(rec.retainTags)
 					: undefined,
+				retainSnapshot: Array.isArray(snapshot?.tags) ? {
+					tags: parseRetainTags(snapshot.tags),
+					scope: snapshot.scope === "project" || snapshot.scope === "user-or-shared"
+						? snapshot.scope : undefined,
+				} : undefined,
 			});
 		} else if (rec.ev === "done") {
 			pending.delete(docId);

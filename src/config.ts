@@ -12,6 +12,8 @@ import * as path from "node:path";
 
 export type Budget = "low" | "mid" | "high";
 
+export type BankRole = "global" | "project";
+
 /** How hard recall works: number of bank queries and refine rounds. */
 export type RecallEffort = "light" | "normal" | "thorough";
 
@@ -24,6 +26,9 @@ export interface HindsightConfig {
 	bankId: string;
 	/** Configured tags appended to every retain request. */
 	retain_tags: string[];
+	/** Validated by each bank operation so a bad policy cannot broaden a read. */
+	memory?: unknown;
+	identity?: Partial<Record<"user" | "project" | "agent", string>>;
 	/**
 	 * Optional second bank holding what is true across projects (how the person
 	 * works, not what the code is). Empty = not wired: no client, no tool.
@@ -192,6 +197,44 @@ function repoBankId(cwd: string): string {
 	return name ? slugify(name) : defaultBankId(root);
 }
 
+function identitySlug(value: string | undefined): string | undefined {
+	return value && /[a-z0-9]/i.test(value) ? slugify(value) : undefined;
+}
+
+function localUser(): string | undefined {
+	try {
+		return os.userInfo().username;
+	} catch {
+		return undefined;
+	}
+}
+
+function memoryIdentity(cwd: string, recordedBank?: string): HindsightConfig["identity"] {
+	const override = recordedBank === undefined ? process.env.HINDSIGHT_PROJECT : undefined;
+	const project = cwd ? repoBankId(cwd) : identitySlug(recordedBank);
+	return {
+		user: identitySlug(process.env.HINDSIGHT_USER ?? localUser()),
+		project: override === undefined ? project : identitySlug(override),
+		agent: identitySlug(process.env.HINDSIGHT_AGENT ?? "pi"),
+	};
+}
+
+function configObject(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function mergeMemory(inherited: unknown, override: unknown): unknown {
+	if (override === undefined) return inherited;
+	if (!configObject(override)) return override;
+	const base = configObject(inherited) ? inherited : {};
+	const result = { ...base, ...override };
+	for (const role of ["global", "project"] as const) {
+		if (configObject(base[role]) && configObject(override[role]))
+			result[role] = { ...base[role], ...override[role] };
+	}
+	return result;
+}
+
 /**
  * Config keys that may be supplied by a global/project override file. Shared by
  * both `readGlobalOverrides` and `readProjectOverrides` so the two layers accept
@@ -202,6 +245,7 @@ export const CONFIG_ALLOW = new Set<keyof HindsightConfig>([
 	"namespace",
 	"bankId",
 	"retain_tags",
+	"memory",
 	"userBankId",
 	"modelId",
 	"recallModelId",
@@ -301,7 +345,7 @@ export function readGlobalOverrides(
 	return readOverridesFile(file);
 }
 
-export function loadConfig(cwd: string): HindsightConfig {
+export function loadConfig(cwd: string, recordedBankId?: string): HindsightConfig {
 	const base: Omit<HindsightConfig, "active" | "bankId" | "retain_tags"> = {
 		baseUrl: (
 			process.env.HINDSIGHT_BASE_URL ?? "http://localhost:8888"
@@ -380,10 +424,14 @@ export function loadConfig(cwd: string): HindsightConfig {
 		merged.autoMemorize = false;
 	}
 	const bank = resolveBank(global, project, cwd);
+	const bankId = recordedBankId ?? bank.bankId;
 	return {
 		...merged,
 		...bank,
-		retain_tags: configuredRetainTags(global, project, bank.bankId),
+		bankId,
+		memory: mergeMemory(global.memory, project.memory),
+		identity: memoryIdentity(cwd, recordedBankId),
+		retain_tags: configuredRetainTags(global, project, bankId),
 	};
 }
 
