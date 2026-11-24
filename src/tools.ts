@@ -43,6 +43,10 @@ const RecallParams = Type.Object({
 	}),
 });
 
+// Keep the memory tools directly callable in oh-my-pi's
+// tool-command mode. Upstream Pi ignores this metadata.
+const directToolPresentation = { loadMode: "essential" } as const;
+
 const ReflectParams = Type.Object({
 	query: Type.String({
 		description: "Question for Hindsight to answer from project memory.",
@@ -71,6 +75,7 @@ export function registerTools(
 	onUserBankWrite?: () => void,
 ): void {
 	pi.registerTool({
+		...directToolPresentation,
 		name: "hindsight_retain",
 		label: "Retain",
 		description:
@@ -122,6 +127,7 @@ export function registerTools(
 
 	if (getUserBank?.()) {
 		pi.registerTool({
+			...directToolPresentation,
 			name: "hindsight_retain_user",
 			label: "Retain (user)",
 			description:
@@ -166,6 +172,7 @@ export function registerTools(
 	}
 
 	pi.registerTool({
+		...directToolPresentation,
 		name: "hindsight_recall",
 		label: "Recall",
 		description:
@@ -201,6 +208,7 @@ export function registerTools(
 	});
 
 	pi.registerTool({
+		...directToolPresentation,
 		name: "hindsight_reflect",
 		label: "Reflect",
 		description:
