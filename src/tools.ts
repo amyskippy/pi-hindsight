@@ -46,6 +46,8 @@ const RecallParams = Type.Object({
 // Keep the memory tools directly callable in oh-my-pi's
 // tool-command mode. Upstream Pi ignores this metadata.
 const directToolPresentation = { loadMode: "essential" } as const;
+const memoryAccessGuidance =
+	"For memory requests, access the bank only through the registered Hindsight tools. If a tool fails, report its error.";
 
 const ReflectParams = Type.Object({
 	query: Type.String({
@@ -175,12 +177,11 @@ export function registerTools(
 		...directToolPresentation,
 		name: "hindsight_recall",
 		label: "Recall",
-		description:
-			"Directly search long-term project memory and return raw recalled facts (no gate, no rewrite).",
-		promptGuidelines: [
-			"Before a non-trivial task, call hindsight_recall to load prior decisions and operational know-how (how to run/test, where creds/configs live).",
-			"Do not guess what may have been discovered earlier — ask memory first.",
-		],
+		description: [
+			"Search long-term project memory for relevant facts. Results are ranked matches for the query.",
+			"If the user asks you to search memory or the available facts leave a specific question unanswered, call this tool directly. Answer once you have enough facts.",
+			memoryAccessGuidance,
+		].join(" "),
 		parameters: RecallParams,
 		async execute(_id, params, signal) {
 			const s = getState();
@@ -211,12 +212,11 @@ export function registerTools(
 		...directToolPresentation,
 		name: "hindsight_reflect",
 		label: "Reflect",
-		description:
-			"Ask Hindsight to synthesize a grounded answer from long-term project memory (direct reflect, no gate).",
-		promptGuidelines: [
-			"Use hindsight_reflect when raw facts are not enough and you need a concise answer synthesized from project memory.",
-			"Use hindsight_recall instead when you need to inspect the raw underlying facts.",
-		],
+		description: [
+			"Ask Hindsight to synthesize a grounded answer from long-term project memory when raw facts are insufficient. Call this tool directly when the user asks to reflect on project memory, even if recalled facts are already available.",
+			"Reflection can take tens of seconds. Use the returned synthesis to answer the question.",
+			memoryAccessGuidance,
+		].join(" "),
 		parameters: ReflectParams,
 		async execute(_id, params, signal) {
 			const s = getState();

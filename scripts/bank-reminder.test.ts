@@ -338,6 +338,7 @@ check(
 );
 
 const line = reminderLine("my-bank");
+check("both forms direct the agent to use the facts it already has", [text, line].every((message) => message.includes("facts already available")), true);
 check("the short form really is one line", line.split("\n").length, 1);
 check("and still labels itself as plugin output", line.includes("not recalled facts"), true);
 check("and still names the bank and the tools", [

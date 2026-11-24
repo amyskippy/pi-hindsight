@@ -180,7 +180,7 @@ export function reminderText(
 	return [
 		LABEL,
 		`- Project bank "${bankId}" holds ${size}: decisions and their rationale, standing constraints, verified procedures, known dead-ends.`,
-		"- Ask it yourself whenever you feel short of prior context: `hindsight_recall` (raw facts, fast) — or `hindsight_reflect` for a synthesized answer, which is SLOW (tens of seconds), so only when raw facts are not enough.",
+		"- Answer from the facts already available when they cover the question. Call `hindsight_recall` directly for a specific lookup, or `hindsight_reflect` directly when asked for a reflection (SLOW, tens of seconds).",
 		`- Learned something durable? \`hindsight_retain\` it now, not later.${lang}`,
 	].join("\n");
 }
@@ -191,5 +191,5 @@ export function reminderText(
  */
 export function reminderLine(bankId: string, language?: string): string {
 	const lang = language ? ` Retain in ${language}.` : "";
-	return `${LABEL}: bank "${bankId}" is there to be asked — \`hindsight_recall\` (fast) or \`hindsight_reflect\` (SLOW), and \`hindsight_retain\` anything durable you learn.${lang}`;
+	return `${LABEL}: Use the facts already available from "${bankId}". Call \`hindsight_recall\` for a specific lookup, \`hindsight_reflect\` for a requested reflection (SLOW), and \`hindsight_retain\` for durable facts.${lang}`;
 }
