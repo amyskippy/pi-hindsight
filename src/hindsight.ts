@@ -469,14 +469,14 @@ export class HindsightClient {
 	 * why the fact died, not of why it came back, and resending it would overwrite
 	 * the audit trail the kill left behind.
 	 *
-	 * The same two rejections as the kill side are swallowed as no-ops, because a
-	 * restore is driven from a log entry that may be older than the bank:
+	 * Return false for rows the bank cannot restore, so the caller can report
+	 * the outcome without adding a successful restore to the log:
 	 *   404 — the memory is gone for good (the document was deleted or reprocessed),
-	 *         so there is nothing to bring back and nothing to report;
+	 *         so there is nothing to bring back;
 	 *   400 — the id is an OBSERVATION. Observations are derived and regenerate from
 	 *         their sources, so the server refuses to curate them either way.
 	 */
-	async restore(id: string, signal?: AbortSignal): Promise<void> {
+	async restore(id: string, signal?: AbortSignal): Promise<boolean> {
 		try {
 			await this.request(
 				"PATCH",
@@ -484,12 +484,13 @@ export class HindsightClient {
 				{ state: "valid" },
 				signal,
 			);
+			return true;
 		} catch (err) {
 			if (
 				err instanceof HindsightError &&
 				(err.status === 404 || err.status === 400)
 			)
-				return;
+				return false;
 			throw err;
 		}
 	}

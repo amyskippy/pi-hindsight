@@ -451,6 +451,7 @@ class MemPanel implements Component {
 	private log: HindsightLogEntry[] = [];
 	private logIndex = 0;
 	private showLogDetail = false;
+	private restoring = false;
 	/** Sticky one-line message under the tab bar (last action / error). */
 	private message = "";
 	/** Set after a settings write: the change applies on the next /reload. */
@@ -710,16 +711,22 @@ class MemPanel implements Component {
 	 * including the parts that were reversed.
 	 */
 	private async restoreSelected(): Promise<void> {
+		if (this.restoring) return;
 		const entry = this.log[this.logIndex];
 		const kills = entry?.type === "invalidate" ? entry.kills : undefined;
-		if (!kills?.length) return;
+		if (!kills?.length) {
+			this.message = "Select a ↓ retire row to restore its facts.";
+			return this.rerender();
+		}
 
+		this.restoring = true;
+		this.message = "Restoring facts…";
+		this.rerender();
 		const restored: NonNullable<HindsightLogEntry["kills"]> = [];
 		let failure = "";
 		for (const k of kills) {
 			try {
-				await this.deps.client.restore(k.id);
-				restored.push(k);
+				if (await this.deps.client.restore(k.id)) restored.push(k);
 			} catch (err) {
 				// Stop at the first refusal: the bank is not answering, so the remaining
 				// ids would fail the same way. What did come back is still logged.
@@ -727,11 +734,14 @@ class MemPanel implements Component {
 				break;
 			}
 		}
+		this.restoring = false;
 		if (restored.length)
 			appendLog(this.deps.cwd, this.deps.loadCfg().logPath, {
 				type: "restore",
 				kills: restored,
 			});
+		if (!failure && restored.length < kills.length)
+			failure = "remaining facts are unavailable for restore";
 		this.message = failure
 			? `restored ${restored.length}/${kills.length} — ${failure}`
 			: `restored ${restored.length} fact${restored.length === 1 ? "" : "s"}`;
@@ -865,6 +875,10 @@ class MemPanel implements Component {
 
 		if (this.focus === "tabs") {
 			if (matchesKey(data, "escape") || data === "q") return this.close();
+			if (this.tab === "Log" && matchesKey(data, "u")) {
+				this.message = "Press Enter to focus the log, then select a ↓ retire row.";
+				return this.rerender();
+			}
 			if (
 				matchesKey(data, "enter") ||
 				matchesKey(data, "down") ||
@@ -938,7 +952,7 @@ class MemPanel implements Component {
 
 	private logInput(data: string): void {
 		if (data === "r") this.refreshLog();
-		else if (data === "u") void this.restoreSelected();
+		else if (matchesKey(data, "u")) return void this.restoreSelected();
 		else if (matchesKey(data, "enter"))
 			this.showLogDetail = !this.showLogDetail;
 		else if (matchesKey(data, "up"))
@@ -1035,7 +1049,7 @@ class MemPanel implements Component {
 		if (this.tab === "Review")
 			return `↑/↓ doc · PgUp/PgDn scroll · a approve · e edit · d delete · r reload · ${back}`;
 		if (this.tab === "Log")
-			return `↑/↓ entry · Enter details · u restore · r reload · ${back}`;
+			return `↑/↓ entry · Enter details · u restore retire row · r reload · ${back}`;
 		return `r refresh · ${back}`;
 	}
 

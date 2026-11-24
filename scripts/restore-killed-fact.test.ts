@@ -121,13 +121,17 @@ const cfgFor = (cwd: string) =>
 type Panel = { render(w: number): string[]; handleInput(d: string): void };
 
 /** Open /mem, walk to the Log tab and descend into its rows. */
-function openLogPanel(cwd: string): { panel: Panel; restored: string[] } {
+function openLogPanel(
+	cwd: string,
+	canRestore: (id: string) => boolean = () => true,
+): { panel: Panel; restored: string[] } {
 	const restored: string[] = [];
 	const client = {
 		health: () => Promise.reject(new Error("offline")),
 		stats: () => Promise.reject(new Error("offline")),
 		restore: async (id: string) => {
 			restored.push(id);
+			return canRestore(id);
 		},
 	} as unknown as HindsightClient;
 
@@ -209,10 +213,9 @@ const client = new HindsightClient({
 } as any);
 
 /** Never let a missing method abort the run — report it as a failed check. */
-async function callRestore(id: string): Promise<Error | undefined> {
+async function callRestore(id: string): Promise<boolean | Error> {
 	try {
-		await client.restore(id);
-		return undefined;
+		return await client.restore(id);
 	} catch (err) {
 		return err as Error;
 	}
@@ -237,16 +240,16 @@ check(
 	{ state: "valid" },
 );
 
-check("Restore a killed fact: the promise resolves", restoreErr, undefined);
+check("Restore a killed fact: the promise resolves with true", restoreErr, true);
 
 // A 400 means the id is an observation (derived, not curatable) and a 404 means
-// the memory is gone. `invalidate` swallows both; `restore` must mirror it.
+// the memory is gone. The panel needs to know neither restored a fact.
 for (const status of [404, 400]) {
 	nextStatus = status;
 	check(
-		`Server refuses the id: HTTP ${status} resolves as a no-op`,
-		(await callRestore("mem-2")) === undefined,
-		true,
+		`Server refuses the id: HTTP ${status} reports no restore`,
+		await callRestore("mem-2"),
+		false,
 	);
 }
 
@@ -311,6 +314,20 @@ check(
 
 const KEY = RESTORE_KEY ?? "\u0000";
 
+{
+	const { panel, restored } = openLogPanel(writeLog([INVALIDATE_B]));
+	panel.handleInput("\x1b"); // focus the tab bar
+	panel.handleInput("\x1b[117;1u"); // Kitty encoding for the letter u
+	check("On the tab bar, u explains how to focus the rows", messageLine(panel).includes("Press Enter"), true);
+	check("The tab bar does not change bank state", restored, []);
+	panel.handleInput("\r");
+	panel.handleInput("\x1b[117;1u");
+	check("The panel immediately shows restore progress", messageLine(panel), "Restoring facts…");
+	panel.handleInput("\x1b[117;1u");
+	await flush();
+	check("Kitty u restores the selected row once even on repeat", restored, KILLS_B.map(({ id }) => id));
+}
+
 // Newest entry is LAST on disk and FIRST in the panel, so INVALIDATE_A (two
 // kills) is the selected row and INVALIDATE_B is the neighbour that must not
 // be touched.
@@ -358,6 +375,15 @@ const KEY = RESTORE_KEY ?? "\u0000";
 	);
 }
 
+{
+	const dir = writeLog([INVALIDATE_A]);
+	const { panel } = openLogPanel(dir, (id) => id === "fact-b");
+	panel.handleInput(KEY);
+	await flush();
+	check("A partial restore reports unavailable facts", messageLine(panel), "restored 1/2 — remaining facts are unavailable for restore");
+	check("A partial restore logs only restored facts", readLog(dir, LOG_PATH, 1)[0]?.kills, [KILLS_A[1]]);
+}
+
 // Anything that is not a retire row with facts on it is inert: no bank call and
 // no log line, so a stray keypress can never manufacture history.
 for (const [label, entries] of [
@@ -370,6 +396,11 @@ for (const [label, entries] of [
 	const before = fs.readFileSync(logFile(dir), "utf8");
 	const { panel, restored } = openLogPanel(dir);
 	panel.handleInput(KEY);
+	check(
+		`Row that cannot be restored: ${label} explains what to select`,
+		messageLine(panel),
+		"Select a ↓ retire row to restore its facts.",
+	);
 	await flush();
 	check(
 		`Row that cannot be restored: ${label} makes no bank call`,
