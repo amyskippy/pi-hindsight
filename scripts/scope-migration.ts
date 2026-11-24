@@ -153,7 +153,7 @@ if (import.meta.main) {
 	const client = new HindsightClient(
 		role === "global" ? { ...cfg, userBankId: bankId } : { ...cfg, bankId },
 		role,
-		process.env.HINDSIGHT_MIGRATION_TOKEN,
+		process.env.HINDSIGHT_MIGRATION_TOKEN ?? "",
 	);
 	const options = {
 		role,

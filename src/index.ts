@@ -279,6 +279,7 @@ export default function (pi: ExtensionAPI) {
 	let userBlock: string | undefined;
 	let userBlockFacts = 0;
 	let userBlockPolicy: string | undefined;
+	let userBlockApiKey: string | undefined;
 	let userEpoch = 0;
 	// Raised by a write to the user bank inside the epoch: the frozen block and the
 	// bank have diverged. It changes nothing in the prompt — swapping the block in
@@ -417,8 +418,9 @@ export default function (pi: ExtensionAPI) {
 			ub.cfg.baseUrl, ub.cfg.namespace, ub.cfg.userBankId, ub.cfg.bankId,
 			ub.cfg.identity, ub.cfg.memory, ub.cfg.configError,
 		]) : undefined;
-		if (policy !== userBlockPolicy) {
+		if (policy !== userBlockPolicy || ub?.cfg.apiKey !== userBlockApiKey) {
 			userBlockPolicy = policy;
+			userBlockApiKey = ub?.cfg.apiKey;
 			userBlock = undefined;
 			userBlockFacts = 0;
 			userBlockStale = false;

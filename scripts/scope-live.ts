@@ -17,7 +17,7 @@ const cfg = {
 	retain_tags: [],
 	memory: undefined,
 };
-const token = process.env.HINDSIGHT_MIGRATION_TOKEN;
+const token = process.env.HINDSIGHT_MIGRATION_TOKEN ?? "";
 const global = new HindsightClient(cfg, "global", token);
 const project = new HindsightClient(cfg, "project", token);
 const scoped = {

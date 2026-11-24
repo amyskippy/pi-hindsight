@@ -412,6 +412,44 @@ const ids = (): string => JSON.stringify(loadPending().map((p) => p.docId).sort(
 	}
 }
 
+// --- Authenticated review requests -----------------------------------------
+{
+	const { patchConfigFile } = await import("../src/config.ts");
+	const { deleteDoc, editDoc, loadReviewDocs } = await import("../src/review-docs.ts");
+	const project = path.join(tmpDir, "authenticated-origin");
+	const baseUrl = "https://memory.example";
+	if (!patchConfigFile(project, { baseUrl, apiKey: "review-key" })) {
+		throw new Error("Could not write the authenticated review fixture");
+	}
+	seed([]);
+	const base = { project, baseUrl, bank: "review-bank", namespace: "default", reason: "compact" };
+	enqueueAdd({ ...base, docId: "authenticated" });
+	enqueueAdd({ ...base, baseUrl: "https://other.example", docId: "wrong-endpoint" });
+	const requests: string[] = [];
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = (async (url: string, init?: RequestInit) => {
+		if (url.startsWith(`${baseUrl}/`) &&
+			new Headers(init?.headers).get("authorization") === "Bearer review-key" &&
+			init?.redirect === "error") requests.push(init.method ?? "");
+		else requests.push("unexpected");
+		return Response.json({ original_text: "original" });
+	}) as typeof fetch;
+	try {
+		const docs = await loadReviewDocs();
+		const doc = docs.find(entry => entry.docId === "authenticated");
+		check("review loads the authenticated origin and skips the unconfigured endpoint",
+			docs.length === 1 && doc?.text === "original");
+		if (doc) {
+			await editDoc(doc, "updated", "en");
+			await deleteDoc(doc);
+		}
+		check("all review requests authenticate against the origin endpoint",
+			requests.join(",") === "GET,POST,DELETE");
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+}
+
 // --- README: the documented contract --------------------------------------
 {
 	const readme = fs.readFileSync(

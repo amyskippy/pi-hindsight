@@ -379,6 +379,45 @@ function slugOf(cwd: string): string {
 	}
 }
 
+// (k) API keys follow config precedence and stay with their endpoint.
+{
+	const baseUrl = "https://memory.example";
+	const inherited = makeCwd("auth-inherited", null);
+	const override = makeCwd("auth-override", { apiKey: "project-key" });
+	const different = makeCwd("auth-different", { baseUrl: "https://other.example" });
+	cleanup.push(inherited, override, different);
+	process.env.HINDSIGHT_API_KEY = "env-key";
+	writeGlobal({ baseUrl });
+	check("(k) environment supplies the API key", loadConfig(inherited).apiKey === "env-key");
+	writeGlobal({ baseUrl, apiKey: " global-key " });
+	const cfg = loadConfig(inherited);
+	check("(k) global key overrides the environment", cfg.apiKey === "global-key");
+	check("(k) project key overrides the global key", loadConfig(override).apiKey === "project-key");
+	const requests: { authorization: string | null; redirect?: RequestRedirect }[] = [];
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+		requests.push({
+			authorization: new Headers(init?.headers).get("authorization"),
+			redirect: init?.redirect,
+		});
+		return Response.json({});
+	}) as typeof fetch;
+	try {
+		await new HindsightClient(cfg, "global").health();
+		await new HindsightClient(loadConfig(different)).health();
+		await new HindsightClient(cfg, "project", "migration-token").health();
+		await new HindsightClient(cfg, "project", "").health();
+		check("(k) requests use bearer authentication and reject redirects",
+			requests[0]?.authorization === "Bearer global-key" && requests[0]?.redirect === "error");
+		check("(k) an endpoint override does not inherit the global key", requests[1]?.authorization === null);
+		check("(k) an explicit script token takes precedence", requests[2]?.authorization === "Bearer migration-token");
+		check("(k) a script can opt out of the normal key", requests[3]?.authorization === null);
+	} finally {
+		globalThis.fetch = originalFetch;
+		writeGlobal(null);
+	}
+}
+
 for (const dir of cleanup) fs.rmSync(dir, { recursive: true, force: true });
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

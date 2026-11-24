@@ -20,6 +20,8 @@ export type RecallEffort = "light" | "normal" | "thorough";
 export interface HindsightConfig {
 	/** Base URL of the Hindsight HTTP API. */
 	baseUrl: string;
+	/** Bearer credential for the configured Hindsight endpoint. */
+	apiKey?: string;
 	/** API namespace (path segment after /v1). */
 	namespace: string;
 	/** Memory bank id (one per project by default). */
@@ -245,6 +247,7 @@ function mergeMemory(inherited: unknown, override: unknown): unknown {
  */
 export const CONFIG_ALLOW = new Set<keyof HindsightConfig>([
 	"baseUrl",
+	"apiKey",
 	"namespace",
 	"bankId",
 	"retain_tags",
@@ -410,6 +413,12 @@ export function loadConfig(cwd: string, recordedBankId?: string): HindsightConfi
 	const global = globalFile.overrides;
 	const project = projectFile.overrides;
 	const merged = { ...base, ...global, ...project };
+	// A checkout that changes the endpoint must supply its own credential.
+	const globalBaseUrl = global.baseUrl ?? base.baseUrl;
+	const inheritedKey = global.apiKey ?? process.env.HINDSIGHT_API_KEY;
+	const sameEndpoint = typeof merged.baseUrl === "string" && typeof globalBaseUrl === "string" &&
+		merged.baseUrl.replace(/\/+$/, "") === globalBaseUrl.replace(/\/+$/, "");
+	const apiKey = project.apiKey ?? (sameEndpoint ? inheritedKey : undefined);
 	// Chains come from user-edited JSON, so coerce them back to string arrays:
 	// a scalar or malformed value must not crash the model resolver.
 	merged.recallModelChain = asStringList(merged.recallModelChain);
@@ -431,6 +440,7 @@ export function loadConfig(cwd: string, recordedBankId?: string): HindsightConfi
 	const bankId = recordedBankId ?? bank.bankId;
 	return {
 		...merged,
+		apiKey: typeof apiKey === "string" ? apiKey.trim() || undefined : undefined,
 		...bank,
 		bankId,
 		memory: mergeMemory(global.memory, project.memory),

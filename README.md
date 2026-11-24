@@ -236,6 +236,7 @@ context.
 | `userBankId` | `HINDSIGHT_USER_BANK` | `""` (off) | User bank; adds `hindsight_retain_user` and the user block |
 | `memory` | — | Scope off | [Per-bank retention tags, recall scope, and recall filters](#scope-aware-memory) |
 | `baseUrl` | `HINDSIGHT_BASE_URL` | `http://localhost:8888` | Hindsight API base URL |
+| `apiKey` | `HINDSIGHT_API_KEY` | — | Bearer credential for Hindsight API requests during a Pi session |
 | `namespace` | `HINDSIGHT_NAMESPACE` | `default` | API namespace |
 | `autoRecall` | `HINDSIGHT_AUTO_RECALL` | `true` | Search memory before each turn |
 | `autoMemorize` | `HINDSIGHT_AUTO_MEMORIZE` | `true` | Write memory on compaction and session close |
@@ -247,6 +248,13 @@ context.
 | `reviewAutoApproveDays` | `HINDSIGHT_REVIEW_AUTO_APPROVE_DAYS` | `7` | Days before a pending review entry auto-approves; `0` disables |
 | — | `HINDSIGHT_AUTO_OFF` | `false` | Kill switch for spawned processes: forces both contours off over every layer |
 | `debug` | `HINDSIGHT_DEBUG` | `false` | Verbose logging — may leak sensitive data |
+
+Set `HINDSIGHT_API_KEY` in the environment that launches Pi, or set `apiKey`
+in your private global `~/.pi/agent/hindsight.json`. The global setting overrides
+the environment, and a project can supply its own `apiKey`. If the project
+changes `baseUrl`, it needs its own key for that endpoint. Reload Pi after
+editing a config file, or restart Pi after changing its environment. The
+migration and live verification scripts use `HINDSIGHT_MIGRATION_TOKEN`.
 
 To enable repository-based bank IDs, set `"bankId": "repo"` in
 `.pi/hindsight.json`. This mode uses the last component of the Git `origin`

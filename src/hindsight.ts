@@ -10,7 +10,7 @@
  *   PATCH /banks/{bank}/memories/{id}     -> curate (edit / invalidate / restore)
  *   POST /banks/{bank}/reflect            -> reflect (synthesis)
  *
- * Extension sessions use the local API. Administrative callers may supply a token.
+ * Administrative callers may supply a separate bearer token.
  */
 
 import type { BankRole, Budget, HindsightConfig } from "./config.ts";
@@ -108,7 +108,7 @@ export class HindsightClient {
 	constructor(
 		private readonly cfg: HindsightConfig,
 		private readonly role: BankRole = "project",
-		private readonly apiToken?: string,
+		private readonly apiToken = cfg.apiKey,
 	) {
 		this.bankId = role === "global" ? cfg.userBankId : cfg.bankId;
 	}
@@ -402,18 +402,26 @@ export class HindsightClient {
 	 * DELETE /v1/{ns}/banks/{bank}/documents/{doc_id} — remove a document and
 	 * its extracted memories. Tolerates 404 (already gone).
 	 */
-	async deleteDocument(docId: string, signal?: AbortSignal): Promise<void> {
+	async deleteDocument(docId: string, signal?: AbortSignal, timeoutMs?: number): Promise<void> {
 		try {
 			await this.request(
 				"DELETE",
 				`${this.bankBase()}/documents/${encodeURIComponent(docId)}`,
 				undefined,
 				signal,
+				timeoutMs,
 			);
 		} catch (err) {
 			if (err instanceof HindsightError && err.status === 404) return;
 			throw err;
 		}
+	}
+
+	/** Fetch the original document and its metadata for review. */
+	async getDocument(docId: string): Promise<Record<string, unknown> | undefined> {
+		return this.request(
+			"GET", `${this.bankBase()}/documents/${encodeURIComponent(docId)}`, undefined, undefined, 5000,
+		);
 	}
 
 	/**

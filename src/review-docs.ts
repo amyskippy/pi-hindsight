@@ -8,13 +8,13 @@
  * queue recorded — entries can come from OTHER projects, so we never assume the
  * current session's client.
  *
- * SECURITY: a queue entry's baseUrl is only honoured when it points at
- * localhost/127.0.0.1, and docIds must match /^[\w-]+$/ before going into a URL.
+ * Remote URLs must match the origin project's configured endpoint.
+ * Legacy loopback URLs can still be used without a credential.
  */
 
 import * as path from "node:path";
 import { loadConfig, type HindsightConfig } from "./config.ts";
-import { HindsightClient } from "./hindsight.ts";
+import { HindsightClient, HindsightError } from "./hindsight.ts";
 import { bankScope, retainSnapshot, scopeMode, type RetainSnapshot } from "./memory-scope.ts";
 import {
 	type PendingDoc,
@@ -51,64 +51,59 @@ export interface ReviewDoc {
 	unreachable: boolean;
 }
 
-/** Accept only localhost bank URLs recorded in the queue (anti-SSRF guard). */
-function safeBaseUrl(u: string): string | undefined {
+function httpBaseUrl(u: string): string | undefined {
 	const url = URL.parse(u);
-	if (url?.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname) &&
+	if (url && (url.protocol === "http:" || url.protocol === "https:") &&
 		!url.username && !url.password && !url.search && !url.hash)
 		return url.href.replace(/\/+$/, "");
 	return undefined;
 }
 
+function isLocalServer(baseUrl: string): boolean {
+	const url = new URL(baseUrl);
+	return url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname);
+}
+
 function sameLocalServer(left: string, right: string): boolean {
-	const base = safeBaseUrl(right);
-	if (!base) return false;
+	const base = httpBaseUrl(right);
+	if (!base || !isLocalServer(left) || !isLocalServer(base)) return false;
 	const first = new URL(left);
 	const second = new URL(base);
-	// Both addresses have already been restricted to IPv4 loopback or localhost.
 	return first.port === second.port && first.pathname === second.pathname;
 }
 
-function bankBase(doc: {
-	baseUrl: string;
-	namespace: string;
-	bank: string;
-}): string {
-	return `${doc.baseUrl}/v1/${encodeURIComponent(doc.namespace)}/banks/${encodeURIComponent(doc.bank)}`;
-}
-
-/** fetch with a hard timeout (undefined on any failure/timeout). */
-async function fetchWithTimeout(
-	url: string,
-	init: RequestInit,
-	ms: number,
-): Promise<Response | undefined> {
-	const ctrl = new AbortController();
-	const timer = setTimeout(() => ctrl.abort(), ms);
-	try {
-		return await fetch(url, { ...init, signal: ctrl.signal });
-	} catch {
-		return undefined;
-	} finally {
-		clearTimeout(timer);
-	}
+function reviewConfig(doc: Pick<ReviewDoc, "docId" | "baseUrl" | "project" | "bank" | "namespace" | "retainSnapshot">) {
+	const baseUrl = httpBaseUrl(doc.baseUrl);
+	if (!baseUrl || !DOC_ID_RE.test(doc.docId)) return undefined;
+	// Historical entries came from automatic project retention.
+	const role = doc.retainSnapshot?.scope === "user-or-shared" ? "global" : "project";
+	const config = loadConfig(doc.project, role === "project" ? doc.bank : undefined);
+	const configuredEndpoint = baseUrl === httpBaseUrl(config.baseUrl);
+	if (!configuredEndpoint && !isLocalServer(baseUrl)) return undefined;
+	return {
+		role,
+		cfg: {
+			...config,
+			baseUrl,
+			namespace: doc.namespace,
+			apiKey: configuredEndpoint ? config.apiKey : undefined,
+			userBankId: role === "global" ? doc.bank : config.userBankId,
+		},
+	} as const;
 }
 
 async function hydrate(p: PendingDoc): Promise<ReviewDoc | undefined> {
-	const base = safeBaseUrl(p.baseUrl);
+	const target = reviewConfig(p);
 	// A malformed docId or bad baseUrl can never be actioned safely — drop it.
 	// Stamped `auto` so the audit trail does not later read as a human decision.
-	if (!base || !DOC_ID_RE.test(p.docId)) {
+	if (!target) {
 		markDone(p.docId, "approved", "auto");
 		return undefined;
 	}
-	const coords = { ...p, baseUrl: base };
-	const url = `${bankBase(coords)}/documents/${encodeURIComponent(p.docId)}`;
-	const res = await fetchWithTimeout(url, { method: "GET" }, 5000);
 	const shell: ReviewDoc = {
 		docId: p.docId,
 		bank: p.bank,
-		baseUrl: base,
+		baseUrl: target.cfg.baseUrl,
 		namespace: p.namespace,
 		project: p.project,
 		reason: p.reason,
@@ -123,19 +118,15 @@ async function hydrate(p: PendingDoc): Promise<ReviewDoc | undefined> {
 		retainSnapshot: p.retainSnapshot,
 		unreachable: false,
 	};
-	// Network/timeout: keep it pending but flag it, so the user is not silently
-	// missing an entry.
-	if (!res) return { ...shell, unreachable: true };
-	if (res.status === 404) {
-		// Auto-drop: nothing stored / already gone. Nobody reviewed this either.
-		markDone(p.docId, "approved", "auto");
-		return undefined;
-	}
-	let doc: Record<string, unknown> = {};
+	let doc: Record<string, unknown>;
 	try {
-		doc = (await res.json()) as Record<string, unknown>;
-	} catch {
-		/* leave doc empty */
+		doc = await new HindsightClient(target.cfg, target.role).getDocument(p.docId) ?? {};
+	} catch (err) {
+		if (err instanceof HindsightError && err.status === 404) {
+			markDone(p.docId, "approved", "auto");
+			return undefined;
+		}
+		return { ...shell, unreachable: true };
 	}
 	return {
 		...shell,
@@ -164,11 +155,9 @@ export function approveDoc(doc: ReviewDoc): void {
 
 /** Delete the document (and its facts) from the bank, then drop it from the queue. */
 export async function deleteDoc(doc: ReviewDoc): Promise<void> {
-	const url = `${bankBase(doc)}/documents/${encodeURIComponent(doc.docId)}`;
-	const res = await fetchWithTimeout(url, { method: "DELETE" }, 10_000);
-	// Tolerate 404 (already gone); any other hard failure keeps it queued.
-	if (res && !res.ok && res.status !== 404)
-		throw new Error(`bank ${res.status}`);
+	const target = reviewConfig(doc);
+	if (!target) throw new Error("Invalid review document coordinates");
+	await new HindsightClient(target.cfg, target.role).deleteDocument(doc.docId, undefined, 10_000);
 	markDone(doc.docId, "deleted");
 }
 
@@ -190,21 +179,16 @@ export async function editDoc(
 		project: path.basename(doc.project) || doc.bank,
 		language,
 	};
-	const baseUrl = safeBaseUrl(doc.baseUrl);
-	if (!baseUrl || !DOC_ID_RE.test(doc.docId)) throw new Error("Invalid review document coordinates");
-	// Historical queue entries come from automatic project retention. Only an
-	// explicit snapshot can establish that an entry was originally global.
-	const role = doc.retainSnapshot?.scope === "user-or-shared" ? "global" : "project";
+	const target = reviewConfig(doc);
+	if (!target) throw new Error("Invalid review document coordinates");
+	const { cfg, role } = target;
 	if (reviewingConfig?.configError) throw new Error(reviewingConfig.configError);
 	if (role === "project" && reviewingConfig?.userBankId === doc.bank &&
 		reviewingConfig.namespace === doc.namespace &&
-		sameLocalServer(baseUrl, reviewingConfig.baseUrl) &&
+		(cfg.baseUrl === httpBaseUrl(reviewingConfig.baseUrl) ||
+			sameLocalServer(cfg.baseUrl, reviewingConfig.baseUrl)) &&
 		scopeMode(reviewingConfig, "global") === "user-or-shared")
 		throw new Error("The reviewing checkout uses this project document's bank as its scoped global bank");
-	const config = role === "global"
-		? { ...loadConfig(doc.project), userBankId: doc.bank }
-		: loadConfig(doc.project, doc.bank);
-	const cfg = { ...config, baseUrl, namespace: doc.namespace };
 	const client = new HindsightClient(cfg, role);
 	let snapshot = doc.retainSnapshot;
 	if (!snapshot?.scope) {
