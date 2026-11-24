@@ -764,36 +764,50 @@ export default function (pi: ExtensionAPI) {
 	// standing facts are in the prompt.
 	pi.on("before_agent_start", async (event, _ctx) => {
 		if (standDown || !userBank) return;
+		// Pi supplies one string. OMP supplies separate system-prompt blocks.
+		const prompt: unknown = event.systemPrompt ?? "";
+		const parts = typeof prompt === "string" ? [prompt] : prompt;
+		if (!Array.isArray(parts) || !parts.every((part): part is string => typeof part === "string")) return;
 		// Remembered for the NEXT boundary, never acted on here: reading the bank
 		// now is the mid-epoch prompt rewrite this whole design exists to avoid. The
 		// spec is kept, not just the fact that a marker exists, so a marker reaching
 		// the prompt from somewhere the file probe cannot see still says WHICH answer
 		// it wants.
-		const asked = findMarkers(event.systemPrompt ?? "").find((h) => h.spec)?.spec;
-		if (asked) markerSeen = asked;
+		for (const part of parts) {
+			const asked = findMarkers(part).find((hit) => hit.spec)?.spec;
+			if (asked) {
+				markerSeen = asked;
+				break;
+			}
+		}
 		if (!epochDecided) {
 			epochDecided = true;
 			// The decision is only whether this epoch OWNS the marker, not whether it
 			// has anything to put there. A marker with no answer is still ours: it gets
 			// blanked, so the model never reads a note addressed to this extension.
-			epochInjects = hasMarker(event.systemPrompt ?? "");
+			epochInjects = parts.some(hasMarker);
 		}
-		const next = epochInjects
-			? applyUserBlock(event.systemPrompt ?? "", userBlock)
-			: undefined;
+		let changed = false;
+		const next = epochInjects ? parts.map((part) => {
+			const replaced = applyUserBlock(part, userBlock);
+			if (replaced !== undefined) changed = true;
+			return replaced ?? part;
+		}) : parts;
 		// The widget reports what actually happened to THIS prompt, not what was read
 		// at the boundary: a marker the epoch answered with nothing is a different
 		// state from a project that never asked, and saying otherwise would be a lie
 		// the user cannot check.
 		status.userBlock({
-			injected: next !== undefined && !!userBlock,
-			blank: next !== undefined && !userBlock,
+			injected: changed && !!userBlock,
+			blank: changed && !userBlock,
 			facts: userBlockFacts,
 			stale: userBlockStale,
 		});
 		// No marker in the instructions means no opinion about the prompt: returning
 		// nothing leaves the host's own string in place, byte for byte.
-		return next === undefined ? undefined : { systemPrompt: next };
+		if (!changed) return;
+		// Return the same shape the host supplied. Pi's typings only cover its string case.
+		return { systemPrompt: (typeof prompt === "string" ? next[0] : next) as typeof event.systemPrompt };
 	});
 
 	// Pre-turn recall: query the bank and return a VISIBLE recall block that both

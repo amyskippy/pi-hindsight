@@ -262,6 +262,26 @@ const control = { injects: false, reads: 0 };
 	);
 }
 
+// --- Scenario: OMP supplies separate prompt blocks
+{
+	arm();
+	const h = newHarness({ cwd: makeCwd("prompt-blocks", {}) });
+	await h.start();
+	const input = ["first prompt block", HOST, "last prompt block"];
+	const t = await h.turn(input);
+	h.done();
+	check(
+		"Block prompts preserve the original boundaries and replace the marker in its block",
+		{
+			returned: t.returned,
+			preserved: t.final.length === 3 && t.final[0] === input[0] && t.final[2] === input[2],
+			replaced: t.final[1] !== HOST && !t.final[1]?.includes(MARKER),
+			injected: t.final[1]?.includes('<user_profile source="hindsight:user"'),
+		},
+		{ returned: true, preserved: true, replaced: true, injected: true },
+	);
+}
+
 // --- Scenario: No marker anywhere in the instructions
 {
 	arm();

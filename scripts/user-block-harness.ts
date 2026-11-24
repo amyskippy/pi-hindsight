@@ -294,11 +294,11 @@ const extension = (await import("../src/index.ts")).default;
 type Handler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown;
 
 /** What one emulated turn produced. */
-export interface Turn {
+export interface Turn<Prompt = string> {
 	/** The runner received a systemPrompt from some handler. */
 	returned: boolean;
 	/** The prompt the runner would use, after every handler had its say. */
-	final: string;
+	final: Prompt;
 	messages: Array<{ customType?: string }>;
 }
 
@@ -307,6 +307,7 @@ export interface Harness {
 	tools: string[];
 	start(reason?: string): Promise<void>;
 	turn(systemPrompt: string): Promise<Turn>;
+	turn(systemPrompt: string[]): Promise<Turn<string[]>>;
 	/**
 	 * Run one of the extension's own registered tools.
 	 *
@@ -431,7 +432,7 @@ export function newHarness(opts: {
 		async start(reason = "startup") {
 			await emit("session_start", { type: "session_start", reason });
 		},
-		async turn(systemPrompt: string): Promise<Turn> {
+		async turn<Prompt extends string | string[]>(systemPrompt: Prompt): Promise<Turn<Prompt>> {
 			let current = systemPrompt;
 			let modified = false;
 			const messages: Array<{ customType?: string }> = [];
@@ -447,7 +448,7 @@ export function newHarness(opts: {
 						},
 						ctx,
 					)) as
-						| { message?: { customType?: string }; systemPrompt?: string }
+						| { message?: { customType?: string }; systemPrompt?: Prompt }
 						| undefined;
 					if (result?.message) messages.push(result.message);
 					if (result?.systemPrompt !== undefined) {
