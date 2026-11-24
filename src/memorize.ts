@@ -318,7 +318,7 @@ export class Memorizer {
 	schedule(
 		ctx: ExtensionContext,
 		reason: string,
-		opts?: { fromStart?: boolean; boundaryId?: string },
+		opts?: { fromStart?: boolean; boundaryId?: string; signal?: AbortSignal },
 	): Promise<void> {
 		const sessionId = ctx.sessionManager.getSessionId() ?? "default";
 		const snapshot = ctx.sessionManager.getEntries();
@@ -341,6 +341,7 @@ export class Memorizer {
 					snapshot,
 					opts?.boundaryId,
 					sessionId,
+					opts?.signal,
 				),
 			)
 			.catch((err) => {
@@ -379,7 +380,9 @@ export class Memorizer {
 		snapshot?: Entries,
 		boundaryId?: string,
 		scheduledSessionId?: string,
+		signal?: AbortSignal,
 	): Promise<void> {
+		if (signal?.aborted) return;
 		const { pi, cfg } = this.deps;
 		const cwd = ctx.cwd ?? process.cwd();
 		// Prefer the snapshot taken at schedule time (pre-compaction). Fall back to
@@ -515,7 +518,7 @@ export class Memorizer {
 				reason,
 				chunks: chunks.length,
 			});
-			const snapshot = await this.runInline(ctx, chain, chunks, deltaText, docId, sessionId);
+			const snapshot = await this.runInline(ctx, chain, chunks, deltaText, docId, sessionId, signal);
 			if (lastId) {
 				const saved = saveState(pi, {
 					watermark: lastId,
@@ -537,6 +540,7 @@ export class Memorizer {
 			}
 			appendDebug(cwd, "memorize.watermark.saved", { reason, lastId });
 		} catch (err) {
+			if (signal?.aborted) return;
 			appendDebug(cwd, "memorize.inline.error", {
 				reason,
 				error: (err as Error).message,
@@ -568,6 +572,7 @@ export class Memorizer {
 		deltaText: string,
 		docId: string,
 		sessionId: string,
+		signal?: AbortSignal,
 	): Promise<RetainSnapshot | undefined> {
 		const { cfg } = this.deps;
 		const cwd = ctx.cwd ?? process.cwd();
@@ -580,8 +585,10 @@ export class Memorizer {
 			const out = cleanProse(
 				await runModel(ctx, chain, buildExtractPrompt(cfg), chunk, {
 					maxTokens: 1536,
+					signal,
 				}),
 			);
+			signal?.throwIfAborted();
 			appendDebug(cwd, "memorize.extract.chunk", {
 				index: i,
 				inputChars: chunk.length,
@@ -625,7 +632,7 @@ export class Memorizer {
 						chain,
 						buildMergePrompt(cfg),
 						`PRIOR SUMMARY:\n${prior || "(empty)"}\n\nNOTES:\n${note}`,
-						{ maxTokens: 2048 },
+						{ maxTokens: 2048, signal },
 					),
 				);
 				// MERGE returns NONE when everything is already known → nothing to store.
@@ -638,6 +645,7 @@ export class Memorizer {
 				/* keep the joined notes */
 			}
 		}
+		signal?.throwIfAborted();
 		if (!note.trim()) {
 			this.deps.status.memoBlocked();
 			appendLog(cwd, cfg.logPath, {
@@ -667,7 +675,7 @@ export class Memorizer {
 						chain,
 						buildVerifyPrompt(cfg),
 						`TRANSCRIPT:\n${deltaText}\n\nNOTE:\n${note}`,
-						{ maxTokens: 2048 },
+						{ maxTokens: 2048, signal },
 					),
 				);
 				appendDebug(cwd, "memorize.verify.done", {
@@ -732,7 +740,7 @@ export class Memorizer {
 					chain,
 					buildDedupQueriesPrompt(cfg),
 					`NOTE:\n${note}`,
-					{ maxTokens: 320 },
+					{ maxTokens: 320, signal },
 				);
 				const parsed: unknown = JSON.parse(raw.trim());
 				if (Array.isArray(parsed)) {
@@ -762,7 +770,7 @@ export class Memorizer {
 					recall = await this.deps.client.recall(
 						q,
 						{ maxTokens: 800, budget: "mid", preferObservations: true },
-						ctx.signal,
+						signal ?? ctx.signal,
 					);
 				} catch (err) {
 					if (err instanceof MemoryScopeError) throw err;
@@ -782,7 +790,7 @@ export class Memorizer {
 			// The SAME recalled facts feed the third verdict. Run it before the prose
 			// dedup: a note that turns out fully duplicate returns early below, and
 			// that is exactly the run where the bank is most likely holding orphans.
-			invalidated = await this.invalidateOrphans(ctx, chain, facts, deltaText);
+			invalidated = await this.invalidateOrphans(ctx, chain, facts, deltaText, signal);
 			// A kill is rare and newsworthy, and the notice that reports it scrolls
 			// away. Put it on the always-on widget too, from the ONE place that knows
 			// the count — the blocked path below returns before the write finishes.
@@ -799,9 +807,10 @@ export class Memorizer {
 						chain,
 						buildDedupPrompt(cfg),
 						`EXISTING MEMORY:\n${existing}\n\nNOTE:\n${note}`,
-						{ maxTokens: 2048 },
+						{ maxTokens: 2048, signal },
 					),
 				);
+				signal?.throwIfAborted();
 				appendDebug(cwd, "memorize.dedup.done", {
 					queries: queries.length,
 					existingFacts: facts.length,
@@ -837,6 +846,7 @@ export class Memorizer {
 
 		// The CODE makes the API call: store the prose as ONE document.
 		// Hindsight extracts the individual facts from it.
+		signal?.throwIfAborted();
 		this.deps.status.memoWriting();
 		appendDebug(cwd, "memorize.retain.start", {
 			bankId: cfg.bankId,
@@ -858,7 +868,7 @@ export class Memorizer {
 			context: retainContext("session-note", provenance),
 			metadata: retainMetadata("session-note", provenance),
 			async: true,
-		}, snapshot);
+		}, snapshot, signal);
 		appendDebug(cwd, "memorize.retain.done", {
 			bankId: cfg.bankId,
 			async: true,
@@ -873,7 +883,7 @@ export class Memorizer {
 					chain,
 					buildSummarizePrompt(cfg),
 					`PREVIOUS:\n${prior || "(empty)"}\n\nNEW NOTE:\n${note}`,
-					{ maxTokens: cfg.summaryMaxTokens },
+					{ maxTokens: cfg.summaryMaxTokens, signal },
 				),
 			);
 			appendDebug(cwd, "memorize.summary.done", {
@@ -901,7 +911,7 @@ export class Memorizer {
 		this.notify(ctx, writeNotice(note, invalidated));
 		// Refresh the bank counters shown in the widget (best-effort).
 		try {
-			const s = await this.deps.client.stats(ctx.signal);
+			const s = await this.deps.client.stats(signal ?? ctx.signal);
 			appendDebug(cwd, "memorize.stats.done", { ...s });
 			this.deps.status.bankOk();
 			this.deps.status.setBankCounts(s.documents, s.facts);
@@ -934,6 +944,7 @@ export class Memorizer {
 		chain: ModelChain,
 		facts: RecallHit[],
 		deltaText: string,
+		signal?: AbortSignal,
 	): Promise<number> {
 		const { cfg } = this.deps;
 		const cwd = ctx.cwd ?? process.cwd();
@@ -970,7 +981,7 @@ export class Memorizer {
 				chain,
 				DEDUP_INVALIDATE,
 				`TRANSCRIPT:\n${deltaText}\n\nSTORED FACTS:\n${listed}`,
-				{ maxTokens: 512 },
+				{ maxTokens: 512, signal },
 			);
 		} catch (err) {
 			appendDebug(cwd, "memorize.invalidate.model_error", {
@@ -996,10 +1007,11 @@ export class Memorizer {
 		const byId = new Map(candidates.map((c) => [c.id, c.text]));
 		const killed: Array<{ id: string; quote: string; text: string }> = [];
 		for (const kill of kills) {
+			if (signal?.aborted) break;
 			try {
 				// The quote IS the reason: the server stores it as invalidation_reason,
 				// so every kill stays auditable next to the fact it retired.
-				await this.deps.client.invalidate(kill.id, kill.quote, ctx.signal);
+				await this.deps.client.invalidate(kill.id, kill.quote, signal ?? ctx.signal);
 				retired += 1;
 				killed.push({
 					id: kill.id,

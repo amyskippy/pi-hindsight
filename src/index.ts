@@ -2,7 +2,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { showChangelogNotice } from "./changelog.ts";
 import { type HindsightConfig, homeDir, loadConfig } from "./config.ts";
 import { registerCommands } from "./commands.ts";
@@ -995,48 +995,51 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	// Last-chance memory write on session teardown, so the un-memorized tail is not
-	// lost when a session is quit or replaced by /new WITHOUT a compaction.
-	// session_shutdown handlers are awaited before process exit (runner.emit), so
-	// the async write completes first — bounded by a 60s cap so quitting can
-	// never hang.
-	pi.on("session_shutdown", async (event, ctx) => {
+	const flushOnClose = async (
+		ctx: ExtensionContext,
+		reason: "quit" | "new",
+		closeSignal?: AbortSignal,
+	) => {
 		if (standDown) return;
 		const cwd = ctx.cwd ?? process.cwd();
 		appendDebug(cwd, "event.session_shutdown", {
-			reason: event.reason,
+			reason,
 			autoMemorize: cfg?.autoMemorize,
 			hasMemorizer: !!memorizer,
 		});
-		// Only when the tail is actually abandoned. reload keeps the same transcript
-		// (nothing lost); resume/fork continue it elsewhere.
-		if (event.reason !== "quit" && event.reason !== "new") return;
-		if (!runtime.autoMemorize || !memorizer || !client || !cfg?.active) return;
-		// On quit the TUI is already stopped, so the widget and message blocks cannot
-		// render — print one plain line so the user knows a write is in progress.
-		if (event.reason === "quit") {
-			try {
+		if (!runtime.autoMemorize || !memorizer || !client || !cfg?.active || closeSignal?.aborted)
+			return;
+		try {
+			if (closeSignal) {
+				// oh-my-pi still has a live UI during its pre-shutdown event.
+				ctx.ui?.notify?.("\uD83E\uDDE0 saving memory before exit…", "info");
+			} else if (reason === "quit") {
+				// Pi emits quit after stopping its TUI.
 				process.stdout.write("\uD83E\uDDE0 saving memory before exit\u2026\n");
-			} catch {
-				/* stdout may be gone on a dead terminal */
 			}
+		} catch {
+			/* A closing terminal may no longer accept output. */
 		}
 		try {
 			status.attach(ctx.ui);
 		} catch {
 			/* UI may already be torn down */
 		}
-		const CAP_MS = 60_000;
+		// Release oh-my-pi's close gate before its 30s handler deadline.
+		const capMs = closeSignal ? 25_000 : 60_000;
+		const deadline = new AbortController();
+		const signal = closeSignal && AbortSignal.any([closeSignal, deadline.signal]);
 		let capTimer: ReturnType<typeof setTimeout> | undefined;
 		const cap = new Promise<void>((resolve) => {
 			capTimer = setTimeout(() => {
-				appendDebug(cwd, "event.session_shutdown.timeout", { capMs: CAP_MS });
+				appendDebug(cwd, "event.session_shutdown.timeout", { capMs });
+				deadline.abort();
 				resolve();
-			}, CAP_MS);
+			}, capMs);
 		});
 		try {
 			await Promise.race([
-				memorizer.schedule(ctx, `shutdown:${event.reason}`),
+				memorizer.schedule(ctx, `shutdown:${reason}`, { signal }),
 				cap,
 			]);
 		} catch (err) {
@@ -1046,6 +1049,22 @@ export default function (pi: ExtensionAPI) {
 		} finally {
 			if (capTimer) clearTimeout(capTimer);
 		}
-		appendDebug(cwd, "event.session_shutdown.done", { reason: event.reason });
+		appendDebug(cwd, "event.session_shutdown.done", { reason });
+	};
+
+	pi.on("session_shutdown", async (event, ctx) => {
+		// Pi supplies a reason. Reload/resume/fork keep the transcript available.
+		if (event.reason === "quit" || event.reason === "new")
+			await flushOnClose(ctx, event.reason);
+	});
+
+	// oh-my-pi's final shutdown event lacks a reason and has a 2s handler budget.
+	// Its operator close gate runs before teardown and can await one memory save.
+	(pi as ExtensionAPI & {
+		on(event: "session_before_shutdown", handler: (
+			event: { signal: AbortSignal }, ctx: ExtensionContext,
+		) => Promise<void>): void;
+	}).on("session_before_shutdown", async (event, ctx) => {
+		await flushOnClose(ctx, "quit", event.signal);
 	});
 }

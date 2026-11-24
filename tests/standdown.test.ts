@@ -16,6 +16,8 @@ import * as path from "node:path";
 import { test } from "node:test";
 
 import factory, { isWorkflowAgentSession } from "../src/index.ts";
+import { HindsightClient } from "../src/hindsight.ts";
+import { Memorizer } from "../src/memorize.ts";
 
 type Handler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown;
 
@@ -220,4 +222,51 @@ test("before_agent_start from a custom message (pi 1.4) neither crashes nor reca
 	);
 	g.__piHindsightDispose?.();
 	delete g.__piHindsightDispose;
+});
+
+test("oh-my-pi waits for one pre-shutdown save while Pi keeps its reason-based saves", async (t) => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "hindsight-shutdown-"));
+	fs.mkdirSync(path.join(cwd, ".pi"));
+	fs.writeFileSync(path.join(cwd, ".pi", "hindsight.json"), JSON.stringify({
+		bankId: "shutdown-fixture",
+		autoMemorize: true,
+	}));
+	t.mock.method(HindsightClient.prototype, "ensureBank", async () => ({}));
+	t.mock.method(HindsightClient.prototype, "getBankConfig", async () => ({}));
+	t.mock.method(HindsightClient.prototype, "updateBankConfig", async () => ({}));
+	t.mock.method(HindsightClient.prototype, "stats", async () => ({ documents: 0, facts: 0 }));
+	const scheduled: Array<{ reason: string; signal?: AbortSignal }> = [];
+	let finishSave: () => void = () => {};
+	t.mock.method(Memorizer.prototype, "schedule", (_ctx, reason, opts) => {
+		scheduled.push({ reason, signal: opts?.signal });
+		if (opts?.signal) return new Promise<void>((resolve) => { finishSave = resolve; });
+		return Promise.resolve();
+	});
+	const pi = fakePi();
+	factory(pi.api as never);
+	const { ctx } = fakeCtx(cwd, undefined);
+	t.after(() => {
+		finishSave();
+		g.__piHindsightDispose?.();
+		delete g.__piHindsightDispose;
+	});
+	await pi.emit("session_start", { type: "session_start" }, ctx);
+
+	const close = new AbortController();
+	let closed = false;
+	const preShutdown = pi.emit("session_before_shutdown", { signal: close.signal }, ctx)
+		.then(() => { closed = true; });
+	await Promise.resolve();
+	assert.equal(closed, false, "the exit hook waits for the pending save");
+	assert.equal(scheduled[0]?.reason, "shutdown:quit");
+	close.abort();
+	assert.equal(scheduled[0]?.signal?.aborted, true, "a forced close cancels the save");
+	finishSave();
+	await preShutdown;
+	assert.equal(closed, true);
+
+	await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+	for (const reason of ["reload", "resume", "fork", "new"])
+		await pi.emit("session_shutdown", { type: "session_shutdown", reason }, ctx);
+	assert.deepEqual(scheduled.map(({ reason }) => reason), ["shutdown:quit", "shutdown:new"]);
 });
