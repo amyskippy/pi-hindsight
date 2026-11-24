@@ -145,6 +145,7 @@ const EXTRACT_BAR = `High bar, inspired by self-learning golden paths:
 - Prefer hard-won learnings: worked only after several tries, non-obvious tooling, project-specific facts, recurring operational workflow, or explicit "remember this".
 - For procedures, include the verification/check that proved it worked when present.
 - For pitfalls, name the failure/dead-end and why it failed when present.
+- When the user corrects a false claim, retain the corrected fact and omit the rejected claim. Preserve a prior state only when the transcript establishes it was true at the time.
 - State each point ONCE, in its most specific and retrievable form.
 
 FUTURE-VALUE TEST: Include a bullet ONLY if a future agent knowing it would act differently: skip a re-discovery, avoid a repeated failure, respect a standing constraint, or find something faster. Narrating what happened in the session is NOT memory.

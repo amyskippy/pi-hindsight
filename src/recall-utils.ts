@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
 
 export interface RecallHit {
 	text: string;
@@ -14,6 +15,11 @@ export interface RecallHit {
 	 * rejected with 400 because observations are derived and regenerate.
 	 */
 	type?: string;
+}
+
+/** A compact handle for the exact reviewed text of a particular bank fact. */
+export function memoryRevision(id: string, text: string): string {
+	return createHash("sha256").update(JSON.stringify([id, text.trim()])).digest("hex").slice(0, 16);
 }
 
 export function normalizeLine(s: string): string {

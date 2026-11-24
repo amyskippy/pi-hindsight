@@ -1011,7 +1011,7 @@ export class Memorizer {
 			try {
 				// The quote IS the reason: the server stores it as invalidation_reason,
 				// so every kill stays auditable next to the fact it retired.
-				await this.deps.client.invalidate(kill.id, kill.quote, signal ?? ctx.signal);
+				if (!(await this.deps.client.invalidate(kill.id, kill.quote, signal ?? ctx.signal))) continue;
 				retired += 1;
 				killed.push({
 					id: kill.id,

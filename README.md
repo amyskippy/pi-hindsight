@@ -430,6 +430,15 @@ retain tools accept an optional `tags` array for descriptive tags. For
 spawned agents that must stay silent, the `--mem-only-tools` CLI flag registers
 the tools and nothing else: no widget, no hooks, no automatic memory.
 
+In an interactive project session, correct a false memory in your own words
+(for example, “The project uses Python. The recalled .NET claim is incorrect.”).
+The agent can look up the fact with `hindsight_recall` using `include_ids`, then
+call `hindsight_correct` using the source fact's revision token. It should ask
+you to choose when several facts match.
+The tool stores and verifies the replacement before retiring a source fact.
+The retirement appears in `/mem` → **Log**. Pressing `u` on that row restores the
+old fact. The replacement stays in the bank.
+
 ## Development
 
 ```bash

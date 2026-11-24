@@ -225,6 +225,9 @@ export default function (pi: ExtensionAPI) {
 	// agent's loader, so a truly module-global flag could leak the agent's
 	// stand-down into the host's hooks.
 	let standDown = false;
+	let submittedCorrectionInput: string | undefined;
+	let correctionTurn: { text: string; cwd: string; sessionId: string | undefined } | undefined;
+	let projectBankCwd: string | undefined;
 
 	let memorizer: Memorizer | undefined;
 	let countsTimer: ReturnType<typeof setInterval> | undefined;
@@ -560,6 +563,7 @@ export default function (pi: ExtensionAPI) {
 
 	const init = (cwd: string) => {
 		cfg = loadConfig(cwd);
+		projectBankCwd = cwd;
 		client = new HindsightClient(cfg, "project");
 		userBank = userBankOf(cfg);
 		lastUserConfig = cfg.configError ? undefined : cfg;
@@ -599,12 +603,18 @@ export default function (pi: ExtensionAPI) {
 		/* no config readable here; the user tool simply is not offered */
 	}
 	userBank = userBankOf(loadCfg);
-	registerTools(pi, getState, getUserBank, onUserBankWrite);
+	registerTools(pi, getState, getUserBank, onUserBankWrite, ctx => {
+		if (projectBankCwd === ctx.cwd && correctionTurn?.cwd === ctx.cwd &&
+			correctionTurn.sessionId === ctx.sessionManager.getSessionId())
+			return correctionTurn.text;
+	});
 	registerCommands(pi, getState, () => memorizer, status, runtime, latest =>
 		userConfigError(latest) ?? userBank?.cfg.configError,
 	);
 
 	pi.on("session_start", async (_event, ctx) => {
+		submittedCorrectionInput = undefined;
+		correctionTurn = undefined;
 		const sessionName = ctx.sessionManager?.getSessionName?.();
 		standDown = isWorkflowAgentSession(sessionName);
 		if (standDown) {
@@ -750,6 +760,25 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		await openUserEpoch(cwd, reason, ctx.ui);
+	});
+
+	// Only operator input can authorize corrections. Bind it to the run that
+	// actually received it, excluding extension prompts and oh-my-pi subagents.
+	pi.on("input", (event, ctx) => {
+		const agent = (ctx as ExtensionContext & { agent?: { kind: string } }).agent;
+		submittedCorrectionInput = !standDown && agent?.kind !== "sub" &&
+			(event.source === "interactive" || event.source === "rpc") ? event.text.trim() : undefined;
+	});
+	pi.on("before_agent_start", (event, ctx) => {
+		const text = submittedCorrectionInput;
+		correctionTurn = text && "prompt" in event && event.prompt.includes(text)
+			? { text, cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId() }
+			: undefined;
+		if (!correctionTurn) submittedCorrectionInput = undefined;
+	});
+	pi.on("agent_end", () => {
+		submittedCorrectionInput = undefined;
+		correctionTurn = undefined;
 	});
 
 	// Inject the frozen user block into the system prompt.

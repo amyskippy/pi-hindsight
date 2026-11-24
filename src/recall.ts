@@ -18,6 +18,7 @@ import {
 import {
 	extractHits,
 	heuristicQueries,
+	memoryRevision,
 	normalizeLine,
 	parseJudge,
 	parseQueryPlan,
@@ -114,14 +115,16 @@ function emptyRecall(): RecallInjectResult {
  * floods the agent with repeated lines. Server-side max_tokens already bounds
  * the overall size, so no line cap is applied here.
  */
-export function formatRecallHits(res: unknown): string {
+export function formatRecallHits(res: unknown, includeIds = false): string {
 	const seen = new Set<string>();
 	const lines: string[] = [];
 	for (const h of extractHits(res)) {
-		const key = normalizeLine(h.text);
-		if (!key || seen.has(key)) continue;
+		const text = normalizeLine(h.text);
+		const key = includeIds && h.id ? `id:${h.id}` : `text:${text}`;
+		if (!text || seen.has(key)) continue;
 		seen.add(key);
-		lines.push(`- ${h.text}`);
+		const id = includeIds && h.id ? `[${h.type ?? "memory"} id=${h.id} revision=${memoryRevision(h.id, h.text)}] ` : "";
+		lines.push(`- ${id}${h.text}`);
 	}
 	return lines.join("\n");
 }

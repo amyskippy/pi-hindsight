@@ -63,10 +63,14 @@ export interface RecallOptions {
 export interface MemoryRow {
 	id?: string;
 	text?: string;
+	type?: string;
 	fact_type?: string;
 	state?: string;
 	tags?: string[];
 	metadata?: Record<string, unknown>;
+	source_memory_ids?: string[] | null;
+	source_fact_ids?: string[] | null;
+	invalidation_reason?: string | null;
 }
 
 export interface InventoryRow {
@@ -299,6 +303,10 @@ export class HindsightClient {
 		return this.request("GET", `${this.bankBase()}/${resource}/${encodeURIComponent(id)}`);
 	}
 
+	async getMemory(id: string, signal?: AbortSignal): Promise<MemoryRow> {
+		return this.request("GET", `${this.bankBase()}/memories/${encodeURIComponent(id)}`, undefined, signal);
+	}
+
 	async updateDocumentTags(
 		id: string,
 		update: { tags?: string[]; add_tags?: string[]; remove_tags?: string[]; observation_scopes?: "combined" },
@@ -418,9 +426,9 @@ export class HindsightClient {
 	}
 
 	/** Fetch the original document and its metadata for review. */
-	async getDocument(docId: string): Promise<Record<string, unknown> | undefined> {
+	async getDocument(docId: string, signal?: AbortSignal): Promise<Record<string, unknown> | undefined> {
 		return this.request(
-			"GET", `${this.bankBase()}/documents/${encodeURIComponent(docId)}`, undefined, undefined, 5000,
+			"GET", `${this.bankBase()}/documents/${encodeURIComponent(docId)}`, undefined, signal, 5000,
 		);
 	}
 
@@ -433,7 +441,7 @@ export class HindsightClient {
 	 *
 	 * An invalidated fact leaves recall, consolidation and the graph but stays in
 	 * the bank for audit, and can be restored. Two rejections are expected and
-	 * swallowed as no-ops rather than failing the write that triggered them:
+	 * reported as false rather than failing the write that triggered them:
 	 *   404 — the memory is already gone;
 	 *   400 — the id is an OBSERVATION. Observations are derived and regenerate
 	 *         from their sources, so the server refuses to curate them.
@@ -442,7 +450,7 @@ export class HindsightClient {
 		id: string,
 		reason: string,
 		signal?: AbortSignal,
-	): Promise<void> {
+	): Promise<boolean> {
 		try {
 			await this.request(
 				"PATCH",
@@ -450,12 +458,13 @@ export class HindsightClient {
 				{ state: "invalidated", reason },
 				signal,
 			);
+			return true;
 		} catch (err) {
 			if (
 				err instanceof HindsightError &&
 				(err.status === 404 || err.status === 400)
 			)
-				return;
+				return false;
 			throw err;
 		}
 	}
