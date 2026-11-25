@@ -328,7 +328,7 @@ check("warns that reflect is slow", /reflect[^\n]*SLOW/.test(text), true);
 check("stays short", text.split("\n").length <= 4, true);
 check(
 	"degrades without counts",
-	reminderText("my-bank").includes('"my-bank" holds prior sessions'),
+	reminderText("my-bank").includes('"my-bank" is configured for project memory.'),
 	true,
 );
 check(
@@ -441,6 +441,62 @@ check(
 		seen.filter((s) => s.includes("hindsight_recall")),
 		[],
 	);
+}
+
+// Drive the full reminder through session startup with a mixed-tag bank.
+{
+	const { bank, makeCwd, newHarness, wire } = await import("./user-block-harness.ts");
+	const params = ["tags", "tags_match", "state"].map(name => ({ name }));
+	bank.schema = { paths: { "/v1/default/banks/{bank_id}/memories/list": { get: { parameters: params } } } };
+	bank.project.documents = 10;
+	bank.project.nodes = 88;
+	const rows = Array.from({ length: 88 }, () => ({ tags: [] as string[], state: "valid" }));
+	const fetch = globalThis.fetch;
+	const tag = "project:reminder-test";
+	process.env.HINDSIGHT_PROJECT = "reminder-test";
+	globalThis.fetch = async (input, init) => {
+		const url = new URL(String(input));
+		if (!url.pathname.endsWith("/project-bank/memories/list")) return fetch(input, init);
+		wire.push({ url: url.href, method: "GET" });
+		const tags = url.searchParams.getAll("tags");
+		const state = url.searchParams.get("state");
+		const matches = rows.filter(row =>
+			(!state || state === row.state) && tags.every(tag => row.tags.includes(tag)),
+		);
+		return Response.json({ items: matches.slice(0, 1), total: matches.length });
+	};
+
+	const getReminder = async (project: Record<string, unknown>) => {
+		const harness = newHarness({ cwd: makeCwd("reminder-count", { userBankId: "", memory: { project } }) });
+		try {
+			await harness.start();
+			return (await harness.turn("test")).messages.find(message => message.customType === "mem-reminder")?.content ?? "";
+		} finally {
+			harness.done();
+		}
+	};
+	try {
+		const scoped = { recallScope: "project", recallFilters: ["project:{project}"] };
+		check("an entirely untagged legacy bank shows zero eligible facts",
+			(await getReminder(scoped)).includes("0 fact(s) eligible for recall"), true);
+		const url = new URL(wire.find(call => call.url.includes("/project-bank/memories/list"))!.url);
+		check("the count requests the configured recall tag", url.searchParams.getAll("tags"), [tag]);
+		check("the count is restricted to valid facts", url.searchParams.get("state"), "valid");
+		rows[0] = { tags: [tag], state: "valid" };
+		rows[1] = { tags: [tag], state: "valid" };
+		rows[2] = { tags: [tag], state: "invalidated" };
+		check("the reminder uses the filtered total beyond the first page",
+			(await getReminder(scoped)).includes("2 fact(s) eligible for recall"), true);
+		check("a compound filter without an exact count uses the count-free reminder",
+			(await getReminder({ ...scoped, recallFilters: ["topic:a", "topic:b"] })).includes("is configured for project memory"), true);
+		bank.schema = { paths: {} };
+		check("a server without a scoped count uses the count-free reminder",
+			(await getReminder(scoped)).includes("is configured for project memory"), true);
+		check("an unscoped bank still displays bank totals",
+			(await getReminder({})).includes("10 document(s) / 88 fact(s)"), true);
+	} finally {
+		globalThis.fetch = fetch;
+	}
 }
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

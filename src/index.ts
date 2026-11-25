@@ -17,6 +17,7 @@ import {
 	forgetFullText,
 	newReminderState,
 	type Nudge,
+	type ReminderCounts,
 	type ReminderGate,
 	reminderDue,
 	reminderLine,
@@ -253,7 +254,7 @@ export default function (pi: ExtensionAPI) {
 	});
 	const nudgeText = (config: HindsightConfig, kind: Nudge): string => {
 		if (kind === "full")
-			return reminderText(config.bankId, bankCounts, config.memoryLanguage);
+			return reminderText(config.bankId, reminderCounts, config.memoryLanguage);
 		if (kind === "short")
 			return reminderLine(config.bankId, config.memoryLanguage);
 		return "";
@@ -263,9 +264,10 @@ export default function (pi: ExtensionAPI) {
 	// decided by the time the reminder one runs: an injected recall block IS the
 	// tools being mentioned, and the reminder must not stack a nudge on top of it.
 	let recallInjected = false;
-	// Last successful stats poll, so the reminder can say how big the bank is
-	// without a request of its own — it must never touch the network.
-	let bankCounts: { documents: number; facts: number } | undefined;
+	// Cached during startup and polling so rendering never waits on the bank.
+	let reminderCounts: ReminderCounts | undefined;
+	let countsRefresh = 0;
+	let countsApplied = 0;
 
 	// --- the user-profile epoch --------------------------------------------
 	//
@@ -545,24 +547,34 @@ export default function (pi: ExtensionAPI) {
 
 	// Refresh the widget doc/fact counters in the background. retain is async on
 	// the server, so counts settle a little after a write — poll instead of blocking.
-	const refreshCounts = async () => {
+	const refreshCounts = async (signal?: AbortSignal) => {
 		// Inactive projects have no declared bank; skip so a failed stats call cannot
 		// flip the (hidden) widget back on.
-		if (!client || !cfg?.active) return;
-		try {
-			const s = await client.stats();
+		const current = client;
+		const config = cfg;
+		if (!current || !config?.active) return;
+		const refresh = ++countsRefresh;
+		const stats = current.stats(signal).catch(() => undefined);
+		const counts = config.bankReminder
+			? current.countScopedMemories(signal)
+				.then(facts => facts === undefined ? stats : { facts })
+				.catch(() => undefined)
+			: undefined;
+		const [s, reminderStats] = await Promise.all([stats, counts]);
+		if (client !== current || refresh < countsApplied) return;
+		countsApplied = refresh;
+		reminderCounts = reminderStats;
+		if (s) {
 			// A successful stats call proves the bank is reachable, so keep the resting
 			// dot green even if the initial ensureBank was slow or briefly failed.
 			status.bankOk();
-			bankCounts = { documents: s.documents, facts: s.facts };
 			status.setBankCounts(s.documents, s.facts);
-		} catch {
-			/* counts are best-effort */
 		}
 	};
 
 	const init = (cwd: string) => {
 		cfg = loadConfig(cwd);
+		reminderCounts = undefined;
 		projectBankCwd = cwd;
 		client = new HindsightClient(cfg, "project");
 		userBank = userBankOf(cfg);
@@ -702,13 +714,7 @@ export default function (pi: ExtensionAPI) {
 					error: (err as Error).message,
 				});
 			}
-			try {
-				const s = await client.stats(ctx.signal);
-				bankCounts = { documents: s.documents, facts: s.facts };
-				status.setBankCounts(s.documents, s.facts);
-			} catch {
-				/* counts are best-effort */
-			}
+			await refreshCounts(ctx.signal);
 			ctx.ui?.notify?.(`\uD83E\uDDE0 bank "${cfg.bankId}" ready`, "info");
 			} catch (err) {
 				status.bankError((err as Error).message);

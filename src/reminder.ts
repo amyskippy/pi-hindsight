@@ -34,6 +34,11 @@
 /** Which flavour of the nudge to render (or none at all). */
 export type Nudge = "full" | "short" | "none";
 
+export interface ReminderCounts {
+	documents?: number;
+	facts: number;
+}
+
 /** What made this turn special, as seen by the recall handler. */
 export type Boundary = "session" | "task" | "none";
 
@@ -168,18 +173,21 @@ const LABEL =
  */
 export function reminderText(
 	bankId: string,
-	counts?: { documents: number; facts: number },
+	counts?: ReminderCounts,
 	language?: string,
 ): string {
-	const size = counts
-		? `${counts.documents} document(s) / ${counts.facts} fact(s)`
-		: "prior sessions";
+	const bank = `Project bank "${bankId}"`;
+	const inventory = counts?.documents !== undefined
+		? `${bank} holds ${counts.documents} document(s) / ${counts.facts} fact(s).`
+		: counts
+			? `${bank} has ${counts.facts} fact(s) eligible for recall in this scope.`
+			: `${bank} is configured for project memory.`;
 	const lang = language
 		? ` Write it in ${language}, whatever language this conversation is in.`
 		: "";
 	return [
 		LABEL,
-		`- Project bank "${bankId}" holds ${size}: decisions and their rationale, standing constraints, verified procedures, known dead-ends.`,
+		`- ${inventory}`,
 		"- Answer from the facts already available when they cover the question. Call `hindsight_recall` directly for a specific lookup, or `hindsight_reflect` directly when asked for a reflection (SLOW, tens of seconds).",
 		`- Learned something durable? \`hindsight_retain\` it now, not later.${lang}`,
 	].join("\n");

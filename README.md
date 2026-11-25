@@ -347,6 +347,10 @@ layer sets `retainTags`, scoped banks use the defaults shown above plus
 tags. To turn off an inherited scope, remove `recallScope` from the file that
 sets it.
 
+With project recall scope or filters enabled, the memory reminder counts active
+facts that match the configured tags. If the server cannot count the full
+filter, the reminder omits the count. The status widget reports bank-wide totals.
+
 Scoped global writes add `scope:shared` when the final tag set has no
 `user:` tags and remove it when an owner tag exists. Scoped project writes
 add the required project tag and reject conflicting project tags. Scoped

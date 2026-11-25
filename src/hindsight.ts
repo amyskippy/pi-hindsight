@@ -260,17 +260,39 @@ export class HindsightClient {
 		const params = new URLSearchParams({ limit: String(limit) });
 		if (predicate.tags_match) {
 			await this.requireFields("Scoped memory listing", "/memories/list", "get", ["tags", "tags_match"]);
-			for (const tag of predicate.tags ?? []) params.append("tags", tag);
-			params.set("tags_match", predicate.tags_match);
 		}
-		const res = (await this.request(
+		const res = await this.memoryList(params, predicate, signal, timeoutMs);
+		return Array.isArray(res?.items) ? res.items : [];
+	}
+
+	/** Count active units under the configured recall policy. Unscoped banks use stats. */
+	async countScopedMemories(signal?: AbortSignal): Promise<number | undefined> {
+		const predicate = flatListTags(recallTags(this.cfg, this.role));
+		if (!predicate.tags_match) return undefined;
+		await this.requireFields("Scoped memory count", "/memories/list", "get", ["tags", "tags_match", "state"]);
+		const params = new URLSearchParams({ limit: "1", state: "valid" });
+		const res = await this.memoryList(params, predicate, signal, 5000);
+		const total = res?.total;
+		if (typeof total !== "number" || !Number.isSafeInteger(total) || total < 0 || res?.total_is_estimate)
+			throw new MemoryScopeError("Hindsight did not provide an exact scoped memory count");
+		return total;
+	}
+
+	private memoryList(
+		params: URLSearchParams,
+		predicate: ReturnType<typeof flatListTags>,
+		signal?: AbortSignal,
+		timeoutMs?: number,
+	): Promise<{ items?: MemoryRow[]; total?: number; total_is_estimate?: boolean } | undefined> {
+		for (const tag of predicate.tags ?? []) params.append("tags", tag);
+		if (predicate.tags_match) params.set("tags_match", predicate.tags_match);
+		return this.request(
 			"GET",
 			`${this.bankBase()}/memories/list?${params}`,
 			undefined,
 			signal,
 			timeoutMs,
-		)) as { items?: MemoryRow[] } | undefined;
-		return Array.isArray(res?.items) ? res.items : [];
+		);
 	}
 
 	/** Unfiltered administrative inventory, independent of prompt and recall policy. */

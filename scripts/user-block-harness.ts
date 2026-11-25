@@ -299,7 +299,7 @@ export interface Turn<Prompt = string> {
 	returned: boolean;
 	/** The prompt the runner would use, after every handler had its say. */
 	final: Prompt;
-	messages: Array<{ customType?: string }>;
+	messages: Array<{ customType?: string; content?: string }>;
 }
 
 export interface Harness {
@@ -435,7 +435,7 @@ export function newHarness(opts: {
 		async turn<Prompt extends string | string[]>(systemPrompt: Prompt): Promise<Turn<Prompt>> {
 			let current = systemPrompt;
 			let modified = false;
-			const messages: Array<{ customType?: string }> = [];
+			const messages: Turn<Prompt>["messages"] = [];
 			for (const handler of handlers.get("before_agent_start") ?? []) {
 				try {
 					const result = (await handler(
@@ -448,7 +448,7 @@ export function newHarness(opts: {
 						},
 						ctx,
 					)) as
-						| { message?: { customType?: string }; systemPrompt?: Prompt }
+					| { message?: Turn<Prompt>["messages"][number]; systemPrompt?: Prompt }
 						| undefined;
 					if (result?.message) messages.push(result.message);
 					if (result?.systemPrompt !== undefined) {
